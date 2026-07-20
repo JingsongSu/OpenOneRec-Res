@@ -1,99 +1,91 @@
-sed 's/=1/=8/g' /etc/mpi/hostfile > /etc/mpi/hostfile_seq
-
-MODEL_DIR=/code/hf_models/Qwen3-1.7B_itemic
-OUTPUT_DIR=/code/onerec_pretrain/model_output/stg1_opt_utils_big
-mkdir -p $OUTPUT_DIR
-mkdir -p /tmp/_wids_cache
-
-nnode=$(wc -l < /etc/mpi/hostfile_seq)
-
+#!/usr/bin/env bash
+set -e
 set -x
 
-SCRIPT_FILE=$(readlink -f $0)
-echo `date '+%Y-%m-%d %H:%M:%S'` >> $OUTPUT_DIR/task_info.log
-echo "script: ${SCRIPT_FILE}" >> $OUTPUT_DIR/task_info.log
-echo "=========================" >> $OUTPUT_DIR/task_info.log
+# ============================================================
+# OpenOneRec Stage1 Pretrain
+# Single machine, 8 GPUs, torchrun launcher, no mpirun
+# ============================================================
 
-echo "Output: $OUTPUT_DIR"
+PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-main/pretrain
 
-export PYTHONPATH=$PWD:$PYTHONPATH
+MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1
+DATASET_CONFIG=examples/dataset_config/pretrain.json
 
-source set_env.sh
+cd ${PRETRAIN_DIR}
 
-hostfile=/etc/mpi/hostfile_seq
-TCP_NIC=$(ifconfig | grep -B1 " "$(hostname -i)" " | grep -o "^\w*")
+mkdir -p ${OUTPUT_DIR}
+mkdir -p /tmp/_wids_cache
 
-MASTER_ADDR=$MY_NODE_IP
-MASTER_PORT=8499
+# 使用 0-7 八张卡，对应原来的 mpirun -np 8
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-mpirun --allow-run-as-root \
-    -hostfile $hostfile \
-    -mca btl self,tcp -mca pml ob1 \
-    -mca plm_rsh_num_concurrent 600 \
-    -mca routed_radix 600 \
-    -mca btl_tcp_if_include $TCP_NIC \
-    -mca oob_tcp_if_include $TCP_NIC \
-    -mca btl_openib_allow_ib false \
-    -mca opal_set_max_sys_limits 1 \
-    -x OMPI_MCA_btl=self,tcp \
-    -x OMPI_MCA_pml=ob1 \
-    -x OMPI_MCA_btl_tcp_if_include=$TCP_NIC \
-    -x OMPI_MCA_oob_tcp_if_include=$TCP_NIC \
-    -x OMPI_MCA_btl_openib_allow_ib=false \
-    -x NCCL_IB_DISABLE=0 \
-    -x NCCL_IB_GID_INDEX=3 \
-    -x NCCL_SOCKET_IFNAME=$TCP_NIC \
-    -x NCCL_IB_HCA=mlx5 \
-    -x NCCL_DEBUG=WARN \
-    -x NCCL_IB_QPS_PER_CONNECTION=4 \
-    -x NCCL_NET_OVERHEAD=1000 \
-    -x NCCL_IB_TIMEOUT=20 \
-    -x LD_PRELOAD=$LD_PRELOAD \
-    -x http_proxy="" \
-    -x https_proxy="" \
-    -x HOROVOD_MPI_THREADS_DISABLE=1 \
-    -x MPI_THREAD_SINGLE=1 \
-    -x NO_COLOR=1 \
-    -x TERM=dumb \
-    -x COLORTERM=0 \
-    -x PYTHONIOENCODING=utf-8 \
-    -x LD_LIBRARY_PATH=$LIBRARY_PATH \
-    -x PATH \
-    -x PYTHONPATH=$PYTHONPATH \
-    -x JAVA_HOME=$JAVA_HOME \
-    -x HIVE_HOME=$HIVE_HOME \
-    -x CLASSPATH=$CLASSPATH \
-    -x HADOOP_USER_NAME=$HADOOP_USER_NAME \
-    -x HADOOP_HOME=$HADOOP_HOME \
-    -x SPARK_HOME=$SPARK_HOME \
-    -x MASTER_ADDR=$MASTER_ADDR \
-    -x MASTER_PORT=$MASTER_PORT \
-    -x TOKENIZERS_PARALLELISM=false \
-    with_nccl_local_env \
-    bash -c "bash scripts/numa_runner.sh python3 recipes/train_qwen3.py \
-        --model_dir $MODEL_DIR \
-        --output_dir $OUTPUT_DIR \
-        --dataset_config examples/dataset_config/pretrain.json \
-        --freeze_llm \
-        --use_tie_weights \
-        --start_optimize_embedding_index 151669 \
-        --model_class Qwen3ForCausalLM \
-        --monitor_datasource_loss \
-        --monitor_datasource_cnt \
-        --max_length 32768 \
-        --learning_rate 2e-4 \
-        --min_lr 1e-4 \
-        --weight_decay 0.1 \
-        --max_grad_norm 1.0 \
-        --lr_scheduler_type cosine \
-        --num_warmup_steps 200 \
-        --num_training_steps 2000 \
-        --save_checkpoint_per_step 50 \
-        --minibatch_size 16384 \
-        --logging_per_step 5 \
-        --use_fp32_weight \
-        --seed 19260817 \
-        --enable_profiler \
-        --enable_gradient_checkpointing \
-        --use_chunked_loss_computer \
-    " > $OUTPUT_DIR/stdout.log 2>$OUTPUT_DIR/stderr.log &
+# 单机多卡 NCCL 设置
+export NCCL_DEBUG=WARN
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=0
+export NCCL_SHM_DISABLE=0
+
+# torchrun 单机 rendezvous 设置
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=8499
+
+# 其他环境变量
+export TOKENIZERS_PARALLELISM=false
+export PYTHONIOENCODING=utf-8
+export PYTHONPATH=${PRETRAIN_DIR}:${PYTHONPATH:-}
+
+STDOUT_LOG=${OUTPUT_DIR}/stdout.log
+STDERR_LOG=${OUTPUT_DIR}/stderr.log
+
+SCRIPT_FILE=$(readlink -f "$0")
+
+echo "$(date '+%Y-%m-%d %H:%M:%S')" >> ${OUTPUT_DIR}/task_info.log
+echo "script: ${SCRIPT_FILE}" >> ${OUTPUT_DIR}/task_info.log
+echo "=========================" >> ${OUTPUT_DIR}/task_info.log
+
+echo "============================================================"
+echo "Stage1 Pretrain"
+echo "PRETRAIN_DIR=${PRETRAIN_DIR}"
+echo "MODEL_DIR=${MODEL_DIR}"
+echo "OUTPUT_DIR=${OUTPUT_DIR}"
+echo "DATASET_CONFIG=${DATASET_CONFIG}"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "MASTER_ADDR=${MASTER_ADDR}"
+echo "MASTER_PORT=${MASTER_PORT}"
+echo "============================================================"
+
+torchrun \
+  --nnodes=1 \
+  --nproc_per_node=8 \
+  --rdzv_backend=c10d \
+  --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+  torchrun_ompi_wrapper.py recipes/train_qwen3.py \
+    --model_dir ${MODEL_DIR} \
+    --output_dir ${OUTPUT_DIR} \
+    --dataset_config ${DATASET_CONFIG} \
+    --freeze_llm \
+    --use_tie_weights \
+    --start_optimize_embedding_index 151669 \
+    --model_class Qwen3ForCausalLM \
+    --monitor_datasource_loss \
+    --monitor_datasource_cnt \
+    --max_length 32768 \
+    --learning_rate 2e-4 \
+    --min_lr 1e-4 \
+    --weight_decay 0.1 \
+    --max_grad_norm 1.0 \
+    --lr_scheduler_type cosine \
+    --num_warmup_steps 200 \
+    --num_training_steps 2000 \
+    --save_checkpoint_per_step 500 \
+    --minibatch_size 12384 \
+    --logging_per_step 50 \
+    --use_fp32_weight \
+    --seed 19260817 \
+    --enable_profiler \
+    --enable_gradient_checkpointing \
+    --use_chunked_loss_computer \
+    > ${STDOUT_LOG} 2> ${STDERR_LOG}
+    

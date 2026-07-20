@@ -1,9 +1,9 @@
 {
     "name": "chat_completion_parquet",
-    "sources": "/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-main/output/split_data_pretrain_only_seq/file_list.json",
+    "sources": "../output/split_data_sft_only_seq_daily/file_list.json",
     "only_assistant_loss": false,
     "max_length": 30000,
-    "base_model_dir": "/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-main/pretrain/model_output/Qwen3-0.6B_itemic",
+    "base_model_dir": "onerec_pretrain/hf_models/Qwen3-0.6B_itemic",
     "num_workers": 2,
     "num_epochs": 4,
     "cut_to_pad": 1,
@@ -12,5 +12,6 @@
     "local_shuffle_buffer_size": 10000,
     "max_sample_length": 30000,
     "local_shuffle_random_fetch": 0.0001,
-    "itemic_id_range": [151669, 169742]
+    "itemic_id_range": [151669, 169742],
+    "add_think_pattern": false
 }

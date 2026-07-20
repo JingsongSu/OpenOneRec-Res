@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openonerec-vllm085-residual-sid"
+version = "0.1.0"
+description = "OpenOneRec residual SID models for vLLM 0.8.5"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openonerec_vllm085_residual_sid*"]
+
+[project.entry-points."vllm.general_plugins"]
+openonerec_residual_sid_v085 = "openonerec_vllm085_residual_sid:register"
