@@ -1,0 +1,31 @@
+{
+  "gemini": {
+    "project": "",
+    "location": "",
+    "model_name": "gemini-2.5-flash-lite",
+    "credentials_path": "",
+    "max_new_tokens": 10000,
+    "temperature": 0.01,
+    "max_retries": 3,
+    "retry_delay": 2
+  },
+  "deepseek": {
+    "api_key": "",
+    "base_url": "",
+    "model_name": "deepseek-r1",
+    "appid": "",
+    "max_new_tokens": 10000,
+    "temperature": 0.01,
+    "max_retries": 3,
+    "retry_delay": 2
+  },
+  "claude": {
+    "api_key": "",
+    "base_url": "",
+    "model_name": "",
+    "max_new_tokens": 10000,
+    "temperature": 0.01,
+    "max_retries": 3,
+    "retry_delay": 2
+  }
+}

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.so
+*.egg-info
+*.pylintrc
+
+# Build
+build
+
+# IDE
+.vscode/
+.idea/
+*~
+
+# OS
+.DS_Store
+
+# Project specific
+keys.txt
+hostfile
+
+# Data files
+*.parquet
+*.bin
+*.pt
+*.npy
+
+
+# Logs and outputs
+*.log
+*.err
+*.out
+
+# System files
+*.swp
+*.deb
+.git

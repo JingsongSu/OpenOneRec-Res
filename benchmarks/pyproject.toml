@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onerec-benchamrk"
+version = "0.1.0"
+description = "OneRec Benchmark"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache License 2.0"}
+
+# Core dependencies - pinned to specific versions from pip list
+dependencies = [
+    "torch==2.5.1",
+    "transformers==4.52.0",
+    "ray==2.43.0",
+    "vllm==0.7.3",
+    "gradio==4.44.1",
+    "datasets==3.6.0",
+    "safetensors==0.5.3",
+    "numpy==1.26.4",
+    "peft==0.15.2",
+    "accelerate==1.8.1",
+    "bert_score",
+    "pyfiglet",
+    "pylatexenc",
+    "scikit-learn",
+    "vertexai",
+    "openai",
+    "anthropic"
+]
+
+[tool.setuptools]
+packages = ["benchmark", "api", "scripts"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.yml"]

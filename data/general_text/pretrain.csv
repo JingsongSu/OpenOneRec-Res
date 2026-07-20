@@ -1,0 +1,12 @@
+﻿dataname,sample_num,huggingface_repo
+Nemotron_CC_Math_v1,15440682 ,https://huggingface.co/datasets/nvidia/Nemotron-CC-Math-v1
+Nemotron_Pretraining_Code_v1,5329298 ,https://huggingface.co/datasets/nvidia/Nemotron-Pretraining-Code-v1
+Nemotron_CC_v2,2306412 ,https://huggingface.co/datasets/nvidia/Nemotron-CC-v2
+reasoning_v1_20m,1666229 ,https://huggingface.co/datasets/glaiveai/reasoning-v1-20m
+OpenMathReasoning,477179 ,https://huggingface.co/datasets/nvidia/OpenMathReasoning
+NuminaMath-QwQ-CoT-5M,324270 ,https://huggingface.co/datasets/PrimeIntellect/NuminaMath-QwQ-CoT-5M
+OpenCodeReasoning,109292 ,https://huggingface.co/datasets/nvidia/OpenCodeReasoning
+KodCode_V1_SFT_R1,39211 ,https://huggingface.co/datasets/KodCode/KodCode-V1-SFT-R1
+Chinese-Reasoning-Distil-Data,30000 ,https://huggingface.co/datasets/Mxode/Chinese-Reasoning-Distil-Data
+medical-o1-reasoning-SFT,7000 ,https://huggingface.co/datasets/FreedomIntelligence/medical-o1-reasoning-SFT
+Bespoke-Stratos-17k,2000 ,https://huggingface.co/datasets/bespokelabs/Bespoke-Stratos-17k

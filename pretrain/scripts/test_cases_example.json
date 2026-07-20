@@ -1,0 +1,25 @@
+{
+  "test_cases": [
+    {
+      "type": "text",
+      "input": "你好，请介绍一下你自己。",
+      "ground_truth": ""
+    },
+    {
+      "type": "chat",
+      "input": [
+        {"role": "user", "content": "写一首关于春天的短诗："}
+      ],
+      "ground_truth": ""
+    },
+    {
+      "type": "chat",
+      "input": [
+        {"role": "system", "content": "你是一名视频描述生成器，请根据下面的视频token生成视频描述"},
+        {"role": "user", "content": "这是一个视频：<|sid_begin|><s_a_2919><s_b_5923><s_c_5443><|sid_end|>，帮我总结一下这个视频讲述了什么内容"}
+      ],
+      "ground_truth": ""
+    }
+  ]
+}
+

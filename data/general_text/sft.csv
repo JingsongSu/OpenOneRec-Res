@@ -1,0 +1,10 @@
+﻿dataname,sample_num,huggingface_repo
+OpenMathReasoning,510163,https://huggingface.co/datasets/nvidia/OpenMathReasoning
+R1-Distill-SFT,502818,https://huggingface.co/datasets/ServiceNow-AI/R1-Distill-SFT
+Infinity_Instruct,446773,https://huggingface.co/datasets/BAAI/Infinity-Instruct
+OpenCoderReasoning,437768,https://huggingface.co/datasets/nvidia/OpenCodeReasoning
+Chinese-Reasoning-Distil-Data,179037,https://huggingface.co/datasets/Mxode/Chinese-Reasoning-Distil-Data
+Reasoning_Multi_subject_RLVR,172108,https://huggingface.co/datasets/punwaiw/multi-subject-rlvr-final-reasoning-traces
+Reasoning_KodCode_V1_SFT_R1,163908,https://huggingface.co/datasets/KodCode/KodCode-V1-SFT-R1
+DeepMath103K,92886,https://huggingface.co/datasets/zwhe99/DeepMath-103K
+medical-o1-reasoning-SFT,50245,https://huggingface.co/datasets/FreedomIntelligence/medical-o1-reasoning-SFT
