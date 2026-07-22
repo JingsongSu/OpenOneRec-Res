@@ -342,8 +342,15 @@ def get_argument_parser() -> argparse.ArgumentParser:
     #                    help="Gradient clipping range")
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
                        help="Max gradient norm (global L2); set to 0 to disable")
-    parser.add_argument("--freeze_llm", action="store_true",
-                       help="Freeze all LLM parameters")
+    parser.add_argument(
+        "--freeze_llm",
+        action="store_true",
+        help=(
+            "Freeze the transformer backbone. Embedding/lm_head remain "
+            "trainable; when model_class is Qwen3ForCausalLMResidualSID, "
+            "sid_residual_blocks also remain trainable."
+        ),
+    )
     parser.add_argument("--enable_gradient_checkpointing", action="store_true",
                        help="Enable gradient checkpointing")
     parser.add_argument("--allow_random_init_params", type=str, default='',
@@ -949,16 +956,39 @@ def initialize_model(
                 m.register_buffer("inv_freq", inv_freq, persistent=False)
                 m.attention_scaling = attention_scaling
 
-    # Freeze parameters if requested
-    # When freeze_llm is enabled, only embedding and output head are trainable
-    # This is useful for embedding-only fine-tuning or when using start_optimize_embedding_index
+    # Freeze parameters if requested.
+    #
+    # Stage1 of the residual-SID model must train three kinds of parameters:
+    #   1. newly added itemic token rows in embed_tokens/lm_head;
+    #   2. sid_residual_blocks, which are newly introduced by the residual model;
+    #   3. nothing else in the transformer backbone.
+    #
+    # EmbeddingGradientMasker, initialized later with
+    # start_optimize_embedding_index, keeps the original vocabulary rows fixed.
     if args.freeze_llm:
         assert args.start_optimize_embedding_index > 0
         for name, param in model.named_parameters():
-            if "embed_tokens" in name or "lm_head" in name:
-                param.requires_grad = True  # Only embeddings and output head are trainable
-            else:
-                param.requires_grad = False  # Freeze all transformer layers
+            keep_trainable = (
+                "embed_tokens" in name
+                or "lm_head" in name
+                or (
+                    args.model_class == "Qwen3ForCausalLMResidualSID"
+                    and "sid_residual_blocks" in name
+                )
+            )
+            param.requires_grad = keep_trainable
+
+        if args.model_class == "Qwen3ForCausalLMResidualSID":
+            residual_trainable = [
+                name
+                for name, param in model.named_parameters()
+                if "sid_residual_blocks" in name and param.requires_grad
+            ]
+            if not residual_trainable:
+                raise RuntimeError(
+                    "--freeze_llm is enabled for the residual-SID model, "
+                    "but no sid_residual_blocks parameters are trainable."
+                )
 
     # Print trainable parameters
     for name, param in model.named_parameters():

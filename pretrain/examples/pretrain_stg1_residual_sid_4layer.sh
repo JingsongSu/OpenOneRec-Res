@@ -2,17 +2,16 @@
 set -euo pipefail
 set -x
 
-# OpenOneRec-Res SFT from the residual-SID Stage2 checkpoint.
+# OpenOneRec-Res Stage1: train new itemic embedding rows and residual SID blocks.
 PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_sid_4layer
-STG2_STEP=${STG2_STEP:-15000}
-MODEL_DIR=${STG2_OUTPUT_DIR}/step${STG2_STEP}/global_step${STG2_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_from_residual_stg2_4layer
-DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/sft.json
+MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_sid_4layer
+DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
+ITEMIC_START_ID=151669
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
 RESIDUAL_SID_LOSS_WEIGHT=1.0
-MAX_LENGTH=${MAX_LENGTH:-28768}
+MAX_LENGTH=${MAX_LENGTH:-24768}
 MASTER_PORT=${MASTER_PORT:-8499}
 
 cd "${PRETRAIN_DIR}"
@@ -20,7 +19,6 @@ mkdir -p "${OUTPUT_DIR}" /tmp/_wids_cache
 for required_path in \
   "${MODEL_DIR}/config.json" \
   "${MODEL_DIR}/tokenizer_config.json" \
-  "${MODEL_DIR}/residual_sid_config.json" \
   "${DATASET_CONFIG}" \
   "${PRETRAIN_DIR}/torchrun_ompi_wrapper.py" \
   "${PRETRAIN_DIR}/recipes/train_qwen3_residual_sid.py" \
@@ -65,8 +63,7 @@ USE_TIE_WEIGHTS_ARGS=()
 {
   echo "$(date '+%Y-%m-%d %H:%M:%S')"
   echo "script: ${SCRIPT_FILE}"
-  echo "stage: residual_sid_sft_from_residual_stage2"
-  echo "stg2_step: ${STG2_STEP}"
+  echo "stage: residual_sid_stage1"
   echo "model_dir: ${MODEL_DIR}"
   echo "output_dir: ${OUTPUT_DIR}"
   echo "dataset_config: ${DATASET_CONFIG}"
@@ -76,7 +73,6 @@ USE_TIE_WEIGHTS_ARGS=()
   echo "========================="
 } >> "${OUTPUT_DIR}/task_info.log"
 
-# No --allow_random_init_params: residual blocks must load from Stage2.
 torchrun \
   --nnodes=1 \
   --nproc_per_node=8 \
@@ -87,8 +83,11 @@ torchrun \
   --model_dir "${MODEL_DIR}" \
   --output_dir "${OUTPUT_DIR}" \
   --dataset_config "${DATASET_CONFIG}" \
+  --freeze_llm \
   "${USE_TIE_WEIGHTS_ARGS[@]}" \
+  --start_optimize_embedding_index "${ITEMIC_START_ID}" \
   --model_class Qwen3ForCausalLMResidualSID \
+  --allow_random_init_params sid_residual_blocks \
   --residual_sid_num_layers "${RESIDUAL_SID_NUM_LAYERS}" \
   --residual_sid_dropout "${RESIDUAL_SID_DROPOUT}" \
   --residual_sid_loss_weight "${RESIDUAL_SID_LOSS_WEIGHT}" \
@@ -101,8 +100,8 @@ torchrun \
   --weight_decay 0.1 \
   --max_grad_norm 1.0 \
   --lr_scheduler_type cosine \
-  --num_warmup_steps 500 \
-  --num_training_steps 5000 \
+  --num_warmup_steps 200 \
+  --num_training_steps 2000 \
   --save_checkpoint_per_step 500 \
   --minibatch_size 12384 \
   --logging_per_step 50 \

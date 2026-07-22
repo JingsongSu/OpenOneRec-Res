@@ -2,17 +2,17 @@
 set -euo pipefail
 set -x
 
-# OpenOneRec-Res SFT from the residual-SID Stage2 checkpoint.
+# OpenOneRec-Res Stage2: full-parameter residual SID pretraining.
 PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_sid_4layer
-STG2_STEP=${STG2_STEP:-15000}
-MODEL_DIR=${STG2_OUTPUT_DIR}/step${STG2_STEP}/global_step${STG2_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_from_residual_stg2_4layer
-DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/sft.json
+STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_sid_4layer
+STG1_STEP=${STG1_STEP:-18500}
+MODEL_DIR=${STG1_OUTPUT_DIR}/step${STG1_STEP}/global_step${STG1_STEP}/converted
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_sid_4layer
+DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
 RESIDUAL_SID_LOSS_WEIGHT=1.0
-MAX_LENGTH=${MAX_LENGTH:-28768}
+MAX_LENGTH=${MAX_LENGTH:-24768}
 MASTER_PORT=${MASTER_PORT:-8499}
 
 cd "${PRETRAIN_DIR}"
@@ -65,8 +65,8 @@ USE_TIE_WEIGHTS_ARGS=()
 {
   echo "$(date '+%Y-%m-%d %H:%M:%S')"
   echo "script: ${SCRIPT_FILE}"
-  echo "stage: residual_sid_sft_from_residual_stage2"
-  echo "stg2_step: ${STG2_STEP}"
+  echo "stage: residual_sid_stage2"
+  echo "stg1_step: ${STG1_STEP}"
   echo "model_dir: ${MODEL_DIR}"
   echo "output_dir: ${OUTPUT_DIR}"
   echo "dataset_config: ${DATASET_CONFIG}"
@@ -76,7 +76,8 @@ USE_TIE_WEIGHTS_ARGS=()
   echo "========================="
 } >> "${OUTPUT_DIR}/task_info.log"
 
-# No --allow_random_init_params: residual blocks must load from Stage2.
+# No --freeze_llm: all parameters are trainable.
+# No --allow_random_init_params: residual weights must come from Stage1.
 torchrun \
   --nnodes=1 \
   --nproc_per_node=8 \
