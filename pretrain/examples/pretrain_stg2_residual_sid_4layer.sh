@@ -4,15 +4,15 @@ set -x
 
 # OpenOneRec-Res Stage2: full-parameter residual SID pretraining.
 PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_sid_4layer
+STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature
 STG1_STEP=${STG1_STEP:-18500}
 MODEL_DIR=${STG1_OUTPUT_DIR}/step${STG1_STEP}/global_step${STG1_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_sid_4layer
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
 RESIDUAL_SID_LOSS_WEIGHT=1.0
-MAX_LENGTH=${MAX_LENGTH:-24768}
+MAX_LENGTH=${MAX_LENGTH:-22768}
 MASTER_PORT=${MASTER_PORT:-8499}
 
 cd "${PRETRAIN_DIR}"

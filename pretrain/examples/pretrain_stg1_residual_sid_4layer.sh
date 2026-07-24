@@ -4,14 +4,14 @@ set -x
 
 # OpenOneRec-Res Stage1: train new itemic embedding rows and residual SID blocks.
 PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_sid_4layer
+MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic_add_feature
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
 ITEMIC_START_ID=151669
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
 RESIDUAL_SID_LOSS_WEIGHT=1.0
-MAX_LENGTH=${MAX_LENGTH:-24768}
+MAX_LENGTH=${MAX_LENGTH:-22768}
 MASTER_PORT=${MASTER_PORT:-8499}
 
 cd "${PRETRAIN_DIR}"

@@ -4,10 +4,10 @@ set -x
 
 # OpenOneRec-Res SFT from the residual-SID Stage2 checkpoint.
 PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_sid_4layer
+STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature
 STG2_STEP=${STG2_STEP:-15000}
 MODEL_DIR=${STG2_OUTPUT_DIR}/step${STG2_STEP}/global_step${STG2_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_from_residual_stg2_4layer
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_from_residual_add_feature
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/sft.json
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
