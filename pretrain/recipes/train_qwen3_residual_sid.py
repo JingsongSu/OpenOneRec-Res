@@ -6,6 +6,7 @@ Supports distributed training, checkpointing, and comprehensive monitoring.
 
 import os
 import sys
+import shutil
 
 sys.path.append("./onerec_llm/models")
 
@@ -80,6 +81,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Stop SFT after saving this real checkpoint step.
+# If data is exhausted earlier, copy the final real checkpoint to this step.
+TARGET_CHECKPOINT_STEP = 22000
 
 
 class TrainingMetrics:
@@ -497,6 +502,65 @@ def save_model_checkpoint(
         dist.barrier()
 
 
+def copy_checkpoint_to_target_step(
+    save_dir: str,
+    source_step: int,
+    target_step: int,
+) -> None:
+    """Copy the final real checkpoint to the requested target-step directory."""
+    copy_result = [""]
+
+    if dist.get_rank() == 0:
+        try:
+            source_dir = os.path.join(save_dir, f"step{source_step}")
+            target_dir = os.path.join(save_dir, f"step{target_step}")
+
+            if not os.path.isdir(source_dir):
+                raise FileNotFoundError(
+                    f"Source checkpoint does not exist: {source_dir}"
+                )
+
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+
+            shutil.copytree(source_dir, target_dir)
+
+            # Keep the inner model-checkpoint directory consistent with step22000.
+            source_model_dir = os.path.join(
+                target_dir, f"global_step{source_step}"
+            )
+            target_model_dir = os.path.join(
+                target_dir, f"global_step{target_step}"
+            )
+            if os.path.isdir(source_model_dir):
+                os.rename(source_model_dir, target_model_dir)
+
+            with open(
+                os.path.join(save_dir, "latest"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(f"step{target_step}")
+
+            logger.info(
+                "Copied checkpoint step%s to step%s",
+                source_step,
+                target_step,
+            )
+        except Exception as e:
+            copy_result[0] = str(e)
+
+    # All ranks receive the same result so they finish together.
+    dist.broadcast_object_list(copy_result, src=0)
+    if copy_result[0]:
+        raise RuntimeError(
+            "Failed to copy final checkpoint to "
+            f"step{target_step}: {copy_result[0]}"
+        )
+
+    dist.barrier()
+
+
 def initialize_distributed() -> Tuple[int, int, int]:
     """Initialize distributed training environment.
 
@@ -864,6 +928,7 @@ def find_residual_sid_examples(
     ).long()
     return indices, targets
 
+
 def initialize_model(
     args,
     device_mesh: DeviceMesh,
@@ -980,8 +1045,7 @@ def initialize_model(
 
         if args.model_class == "Qwen3ForCausalLMResidualSID":
             residual_trainable = [
-                name
-                for name, param in model.named_parameters()
+                name for name, param in model.named_parameters()
                 if "sid_residual_blocks" in name and param.requires_grad
             ]
             if not residual_trainable:
@@ -1302,6 +1366,7 @@ def compute_forward_backward(
             clip_grad_norm(model, args.max_grad_norm)
 
     return loss, per_token_loss, metric_loss_mask
+
 
 def compute_metrics(
     batch: Dict,
@@ -1734,17 +1799,30 @@ def train():
     # Create data iterator
     data_iter = iter(dataloader)
     get_next_batch = lambda: next(data_iter)
+    data_exhausted = False
 
     # Training loop
-    while True:
+    while global_step < TARGET_CHECKPOINT_STEP:
         with contextlib.ExitStack() as ctx:
             if torch_profiler:
                 ctx.enter_context(torch_profiler)
 
             step_time_tracker.tick("enter_context(torch_profiler)")
+            has_batch = torch.tensor(
+                1,
+                dtype=torch.int32,
+                device=torch.cuda.current_device(),
+            )
             try:
                 batch = get_next_batch()
             except StopIteration:
+                has_batch.fill_(0)
+            dist.all_reduce(
+                has_batch,
+                op=dist.ReduceOp.MIN,
+            )
+            if has_batch.item() == 0:
+                data_exhausted = True
                 break
             step_time_tracker.tick("next_batch")
 
@@ -1814,7 +1892,8 @@ def train():
             should_save = (
                 (global_step % args.save_checkpoint_per_step == 0 and global_step > 0) or
                 global_step == 20 or  # Early checkpoint for initial verification
-                global_step == 200    # Early checkpoint for training stability check
+                global_step == 200 or  # Early checkpoint for training stability check
+                global_step == TARGET_CHECKPOINT_STEP
             )
 
             if should_save:
@@ -1838,17 +1917,29 @@ def train():
             if torch_profiler:
                 torch_profiler.step()
 
-    # Save final checkpoint
-    save_model_checkpoint(
-        save_dir=args.output_dir,
-        tag=f"step{global_step}",
-        global_step=global_step,
-        optimizer=optimizer,
-        lr_scheduler=lr_scheduler,
-        dataloader=dataloader,
-        app_state=app_state.set_call_back(converter.revert),
-        dist_checkpointer=dist_checkpointer
-    )
+    if global_step < TARGET_CHECKPOINT_STEP:
+        # Data ended before step22000: save the real final checkpoint first.
+        save_model_checkpoint(
+            save_dir=args.output_dir,
+            tag=f"step{global_step}",
+            global_step=global_step,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            dataloader=dataloader,
+            app_state=app_state.set_call_back(converter.revert),
+            dist_checkpointer=dist_checkpointer
+        )
+
+        # Then copy the complete final checkpoint to step22000.
+        if data_exhausted:
+            copy_checkpoint_to_target_step(
+                save_dir=args.output_dir,
+                source_step=global_step,
+                target_step=TARGET_CHECKPOINT_STEP,
+            )
+    else:
+        # step22000 was already saved in the training loop.
+        dist.barrier()
 
 
 if __name__ == "__main__":

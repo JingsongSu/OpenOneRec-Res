@@ -510,8 +510,11 @@ class Qwen3ChatCompletionDataset(IterableDataset):
                 self.source_sample_cnt[source_name] += 1
             
                 inputs = self._process(sample, source_name)
+            except StopIteration:
+                break
             except Exception:
                 self.source_error_cnt.setdefault(source_name, 0)
+
                 self.source_error_cnt[source_name] += 1
                 error_ratio = self.source_error_cnt[source_name] * 1.0 / \
                     self.source_sample_cnt[source_name]
