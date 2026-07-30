@@ -72,11 +72,8 @@ function update_model()
     #转换模型参数
     cd /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain
     
-    bash scripts/convert_residual_checkpoint_to_hf.sh    /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/stg2_residual_add_feature/step15000/global_step15000/converted  /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/sft_full_residual_add_feature_daily 22000
+    bash scripts/convert_residual_checkpoint_to_hf.sh    /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/stg2_residual_add_feature/step22000/global_step22000/converted  /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/sft_full_residual_add_feature_daily 22000
 
-
-    # #更新推理服务参数  ！！！这里要改成自己的推理，不请求 vllm 了！！！
-    # cp onerec_pretrain/model_output/sft_output_only_seq_daily/step15000/global_step15000/converted/model-00000-of-00001.safetensors /home/jovyan/vllm-model-ad-llm/
 
     #模型文件更新
     rm -rf /home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/stg2_residual_add_feature/step22000/global_step22000/converted
