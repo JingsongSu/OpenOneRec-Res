@@ -5,15 +5,18 @@ OpenOneRec-Res residual SID 线上批量推理。
 
 流程：
   big parquet(system+user)
-    -> 找历史中命中的 HEAD_CTYPES=(2,3,7,11,12)
-    -> 每个命中 CType 单独追加 <|ctype_x|><|sid_begin|>
-    -> llm.encode() residual beam
+    -> 检查历史序列中是否出现过非 0 CType
+    -> 符合条件的用户固定分别追加：
+         <|ctype_3|><|sid_begin|>
+         <|ctype_7|><|sid_begin|>
+         <|ctype_2|><|sid_begin|>
+    -> 每个用户固定执行三次 llm.encode() residual beam
     -> global SID token IDs 转四层本地 SID code
     -> adid2sid.parquet 反查 adid
     -> part-*：mid_<mapped_ctype><TAB>adid1<TAB>...<TAB>adid100
 
-没有命中任何 HEAD CType 的用户直接跳过。
-每个输出 part 最多 5,000,000 行，无表头。
+历史序列 CType 全为 0（或没有 CType token）的用户直接跳过。
+最终输出平均切分为 100 个 part，无表头。
 
 模型输入是最新训练得到的 converted HF 模型。
 可在启动时自动：
@@ -37,6 +40,7 @@ import sys
 import time
 import traceback
 from collections import Counter
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -56,7 +60,7 @@ PRETRAIN_ROOT = Path(
 
 # 改成你当前最新更新的 converted 路径。
 CONVERTED_MODEL_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/sft_full_residual_add_feature_daily/step22000/global_step22000/converted"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/model_output/sft_full_residual_add_feature_daily/step15000/global_step15000/converted"
 )
 
 RESIDUAL_CONFIG_PATH = Path(
@@ -75,7 +79,7 @@ AUTO_PREPARE_VLLM_MODEL = True
 # 否则每次启动都会重新复制/导出整个大模型，看起来会像“卡住”。
 FORCE_REEXPORT = True
 
-EXPORT_BEAM_SIZE = 100
+EXPORT_BEAM_SIZE = 300
 
 DATA_PATH = Path(
     "/home/jovyan/zhouyuhang-cloud1/sujingsong/online_infer/"
@@ -96,7 +100,9 @@ OUTPUT_DIR = Path(
     "infer_adid_parts"
 )
 
-HEAD_CTYPES = ("2", "3", "7", "11", "12")
+# 只要历史序列中出现过任意非 0 CType，
+# 就固定按下面顺序分别推理三次。
+TARGET_CTYPES = ("3", "7", "2")
 
 NUM_GPUS = 8
 
@@ -115,14 +121,16 @@ DTYPE = "bfloat16"
 
 # 大 Parquet 减少 Python/Arrow batch 切换次数。
 # 内存足够可继续提高到 100_000。
-PARQUET_READ_BATCH_SIZE = 1000_000
+PARQUET_READ_BATCH_SIZE = 5000_000
 
 # 只影响日志频率，不影响推理结果；调小便于确认程序没有卡死。
 PROGRESS_USERS = 5000_000
 
-MAX_LINES_PER_PART = 5_000_000
+# 最终固定平均切分成 100 个 part。
+NUM_OUTPUT_PARTS = 100
+
 # 降低频繁小写磁盘开销。
-OUTPUT_WRITE_BUFFER_LINES = 1000_000
+OUTPUT_WRITE_BUFFER_LINES = 5000_000
 
 # 让 GPU 在 writer 短时跟不上时还能继续推几批。
 # 不建议无限增大，因为每个 batch 含 beam SID，Python 对象比较大。
@@ -189,13 +197,30 @@ def extract_mid(metadata_value: Any) -> str:
     return mid
 
 
-def extract_history_head_ctypes(messages: Sequence[Dict[str, Any]]) -> List[str]:
-    text = "".join(content_to_text(x.get("content", "")) for x in messages)
+def has_nonzero_history_ctype(
+    messages: Sequence[Dict[str, Any]],
+) -> bool:
+    """
+    只判断原始用户历史序列中是否出现过非 0 CType。
+
+    - 任意一个 CType != 0：该用户固定推理 3、7、2。
+    - CType 全为 0：跳过。
+    - 没有任何 CType token：跳过。
+    """
+    text = "".join(
+        content_to_text(x.get("content", ""))
+        for x in messages
+    )
+
     if LS_RE.search(text):
         raise ValueError("LS token remains in online input")
-    history = set(CTYPE_RE.findall(text))
-    # 固定按 HEAD_CTYPES 顺序；每个 CType 对一个用户最多推一次。
-    return [ctype for ctype in HEAD_CTYPES if ctype in history]
+
+    history_ctypes = CTYPE_RE.findall(text)
+
+    return any(
+        int(ctype) != 0
+        for ctype in history_ctypes
+    )
 
 
 # ============================================================================
@@ -302,7 +327,7 @@ def load_residual_config(model_path: str) -> Tuple[List[int], List[int], int, in
 
 def build_prefix_ids(tokenizer, sid_begin_id: int) -> Dict[str, List[int]]:
     result = {}
-    for ctype in HEAD_CTYPES:
+    for ctype in TARGET_CTYPES:
         text = f"<|ctype_{ctype}|>{SID_BEGIN}"
         ids = tokenizer.encode(text, add_special_tokens=False)
         if len(ids) != 2:
@@ -341,8 +366,27 @@ def decode_pooling_output(output, beam_size: int) -> np.ndarray:
     else:
         raise ValueError(f"Unexpected pooler ndim={data.ndim}, shape={data.shape}")
 
-    # 前 4 列是 global tokenizer token IDs。
-    return np.rint(data[:, :4]).astype(np.int64)
+    # 第 5 列是 cumulative_score。
+    # cumulative_score 越大，候选排序越靠前。
+    scores = data[:, 4].astype(np.float64, copy=False)
+
+    if not np.all(np.isfinite(scores)):
+        raise ValueError(
+            "Residual beam scores contain NaN or Inf: "
+            f"scores={scores}"
+        )
+
+    # 按 cumulative_score 从高到低稳定排序。
+    # 分数相同时保持模型原始返回顺序。
+    order = np.argsort(
+        -scores,
+        kind="stable",
+    )
+
+    sorted_data = data[order]
+
+    # 排序后只返回前 4 列 global tokenizer token IDs。
+    return np.rint(sorted_data[:, :4]).astype(np.int64)
 
 
 def global_sid_to_local(
@@ -499,20 +543,20 @@ def load_ctype_output_map() -> Dict[str, str]:
 
     missing = [
         ctype
-        for ctype in HEAD_CTYPES
+        for ctype in TARGET_CTYPES
         if ctype not in result
     ]
 
     if missing:
         raise ValueError(
-            f"HEAD_CTYPES missing in ctype map: {missing}"
+            f"TARGET_CTYPES missing in ctype map: {missing}"
         )
 
     print(
         "[Writer] ctype map loaded: "
         + ", ".join(
             f"{ctype}->{result[ctype]}"
-            for ctype in HEAD_CTYPES
+            for ctype in TARGET_CTYPES
         ),
         flush=True,
     )
@@ -525,34 +569,45 @@ def load_ctype_output_map() -> Dict[str, str]:
 # ============================================================================
 
 class PartWriter:
+    """
+    推理过程中先顺序写入一个临时文件。
+
+    全部 GPU worker 完成后，根据最终总行数平均切分成
+    NUM_OUTPUT_PARTS 个 part 文件，各 part 行数最多相差 1。
+    """
+
     def __init__(self) -> None:
         self.part_index = 0
         self.current_lines = 0
         self.total_lines = 0
-        self.handle = None
         self.buffer: List[str] = []
 
-    def _flush(self) -> None:
-        if self.buffer:
-            if self.handle is None:
-                raise RuntimeError("No open part file")
-            self.handle.write("".join(self.buffer))
-            self.buffer.clear()
+        self.temp_path = OUTPUT_DIR / ".all_output.tmp"
 
-    def _open_new(self) -> None:
-        if self.handle is not None:
-            self._flush()
-            self.handle.close()
+        # 防止上一次异常退出留下临时文件。
+        if self.temp_path.exists():
+            self.temp_path.unlink()
 
-        path = OUTPUT_DIR / f"part-{self.part_index:05d}"
-        self.handle = path.open(
+        self.handle = self.temp_path.open(
             "w",
             encoding="utf-8",
             buffering=8 * 1024 * 1024,
         )
-        print(f"[Writer] Open {path}", flush=True)
-        self.part_index += 1
-        self.current_lines = 0
+
+        print(
+            f"[Writer] Temporary output: {self.temp_path}",
+            flush=True,
+        )
+
+    def _flush(self) -> None:
+        if not self.buffer:
+            return
+
+        if self.handle is None:
+            raise RuntimeError("Temporary output file is not open")
+
+        self.handle.write("".join(self.buffer))
+        self.buffer.clear()
 
     def append(
         self,
@@ -566,8 +621,8 @@ class PartWriter:
 
         mid_ctype 和所有 adid 之间全部使用 TAB 分隔。
         """
-        if self.handle is None or self.current_lines >= MAX_LINES_PER_PART:
-            self._open_new()
+        if self.handle is None:
+            raise RuntimeError("Temporary output file is closed")
 
         self.buffer.append(
             "\t".join(
@@ -587,6 +642,82 @@ class PartWriter:
             self._flush()
             self.handle.close()
             self.handle = None
+
+    def finalize(self) -> None:
+        """
+        将临时结果平均切分成固定的 NUM_OUTPUT_PARTS 个 part。
+
+        各 part 行数最多相差 1 行。
+        当总行数不足 NUM_OUTPUT_PARTS 时，后面的 part 可能为空。
+        """
+        self.close()
+        self.part_index = 0
+
+        base_lines, remainder = divmod(
+            self.total_lines,
+            NUM_OUTPUT_PARTS,
+        )
+
+        print(
+            f"[Writer] Splitting {self.total_lines:,} lines "
+            f"into {NUM_OUTPUT_PARTS} parts: "
+            f"base={base_lines:,}, remainder={remainder:,}",
+            flush=True,
+        )
+
+        with self.temp_path.open(
+            "r",
+            encoding="utf-8",
+            buffering=8 * 1024 * 1024,
+        ) as source:
+            for part_index in range(NUM_OUTPUT_PARTS):
+                lines_in_part = (
+                    base_lines
+                    + (1 if part_index < remainder else 0)
+                )
+
+                part_path = (
+                    OUTPUT_DIR
+                    / f"part-{part_index:04d}"
+                )
+
+                with part_path.open(
+                    "w",
+                    encoding="utf-8",
+                    buffering=8 * 1024 * 1024,
+                ) as target:
+                    target.writelines(
+                        islice(
+                            source,
+                            lines_in_part,
+                        )
+                    )
+
+                self.part_index += 1
+
+                print(
+                    f"[Writer] Saved {part_path}: "
+                    f"{lines_in_part:,} lines",
+                    flush=True,
+                )
+
+            # 正常情况下不应再有剩余数据。
+            extra_line = source.readline()
+
+            if extra_line:
+                raise RuntimeError(
+                    "Temporary output contains more lines "
+                    "than writer.total_lines"
+                )
+
+        self.temp_path.unlink()
+
+        print(
+            f"[Writer] Split completed: "
+            f"{self.part_index} parts, "
+            f"{self.total_lines:,} total lines",
+            flush=True,
+        )
 
 
 # ============================================================================
@@ -666,6 +797,10 @@ def output_writer_worker(output_queue, status_queue, num_gpu_workers: int) -> No
 
         finally:
             writer.close()
+
+        # 只有所有 GPU worker 都正常完成后，
+        # 才将临时结果平均切分成 100 个 part。
+        writer.finalize()
 
         status_queue.put(
             {
@@ -865,16 +1000,18 @@ def inference_worker(
                         metadata_value
                     )
 
-                    ctypes = extract_history_head_ctypes(
+                    if not has_nonzero_history_ctype(
                         messages
-                    )
-
-                    if not ctypes:
-                        stats["users_no_head_ctype"] += 1
+                    ):
+                        stats[
+                            "users_all_zero_or_no_ctype"
+                        ] += 1
                         continue
 
                     stats["users_inferred"] += 1
-                    stats["prefixes_created"] += len(ctypes)
+                    stats["prefixes_created"] += len(
+                        TARGET_CTYPES
+                    )
 
                     # system + user chat template 只做一次。
                     base_ids = tokenizer.apply_chat_template(
@@ -885,8 +1022,8 @@ def inference_worker(
                     )
                     base_ids = list(base_ids)
 
-                    # 一个用户命中几个 HEAD CType，就构造几个 prefix prompt。
-                    for ctype in ctypes:
+                    # 每个符合条件的用户固定构造 3、7、2 三个 prefix prompt。
+                    for ctype in TARGET_CTYPES:
                         prompt_token_ids = (
                             base_ids
                             + prefix_ids_map[ctype]
@@ -939,7 +1076,7 @@ def inference_worker(
                             f"[Rank {rank}] "
                             f"users={stats['users_seen']:,}; "
                             f"inferred={stats['users_inferred']:,}; "
-                            f"skip={stats['users_no_head_ctype']:,}; "
+                            f"skip={stats['users_all_zero_or_no_ctype']:,}; "
                             f"prefixes={stats['prefixes_created']:,}; "
                             f"time={elapsed:.1f}s",
                             flush=True,
@@ -1061,10 +1198,10 @@ def main() -> None:
     print(f"Converted model : {CONVERTED_MODEL_PATH}")
     print(f"vLLM model      : {model_path}")
     print(f"Input parquet   : {DATA_PATH}")
-    print(f"Head CType      : {HEAD_CTYPES}")
+    print(f"Target CType    : {TARGET_CTYPES}")
     print(f"GPUs            : {NUM_GPUS}")
     print(f"Prefix batch    : {BATCH_SIZE}")
-    print(f"Lines / part    : {MAX_LINES_PER_PART:,}")
+    print(f"Output parts    : {NUM_OUTPUT_PARTS}")
     print(f"Output dir      : {OUTPUT_DIR}")
     print("=" * 80)
 
@@ -1211,8 +1348,8 @@ def main() -> None:
     print(f"Users seen           : {total_stats['users_seen']:,}")
     print(f"Users inferred       : {total_stats['users_inferred']:,}")
     print(
-        f"Users no head CType  : "
-        f"{total_stats['users_no_head_ctype']:,}"
+        f"Users all-zero/no CType: "
+        f"{total_stats['users_all_zero_or_no_ctype']:,}"
     )
     print(
         f"Prefix prompts       : "
