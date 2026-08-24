@@ -310,6 +310,67 @@ def get_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--latent_reasoning_num_steps",
+        type=int,
+        default=3,
+        help=(
+            "Number of branch-conditioned interleaved latent reasoning steps. "
+            "For four SID layers use 3: one thought before B, C, and D."
+        ),
+    )
+    parser.add_argument(
+        "--latent_reasoning_dropout",
+        type=float,
+        default=0.1,
+        help=(
+            "Dropout inside the three branch-conditioned latent thought "
+            "blocks inserted before formal B/C/D residual transitions."
+        ),
+    )
+    parser.add_argument(
+        "--latent_reasoning_temperature",
+        type=float,
+        default=1.0,
+        help=(
+            "DEPRECATED/IGNORED in branch-conditioned interleaved mode. "
+            "Kept only so older launch wrappers remain parse-compatible."
+        ),
+    )
+    parser.add_argument(
+        "--latent_reasoning_loss_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Compatibility flag. Branch-conditioned interleaved reasoning "
+            "uses only formal A/B/C/D task losses, so keep this at 0.0."
+        ),
+    )
+    # Backward-compatible deprecated arguments from the previous token-latent
+    # experiment. They are intentionally accepted but no longer used.
+    parser.add_argument(
+        "--latent_reasoning_tokens",
+        nargs=3,
+        default=[
+            "<|latent_r1|>",
+            "<|latent_r2|>",
+            "<|latent_r3|>",
+        ],
+        help=(
+            "DEPRECATED/IGNORED in layer-wise latent-anchor mode. Kept only so old shell "
+            "scripts do not fail argument parsing."
+        ),
+    )
+    parser.add_argument(
+        "--mask_latent_reasoning_lm_loss",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "DEPRECATED/IGNORED. Dynamic latent states are internal MLP states, "
+            "not autoregressive tokens, so there are no latent-token LM losses."
+        ),
+    )
+
     # Dataset arguments
     parser.add_argument("--dataset_config", type=str, default=None,
                        help="Path to dataset configuration JSON file")
@@ -664,22 +725,50 @@ def _discover_sid_layers(tokenizer) -> list[dict]:
 
 
 def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
-    """Resolve all SID metadata from the same stg2 tokenizer used by the model."""
+    """Resolve residual SID metadata and layer-wise latent-anchor settings."""
     if args.model_class != "Qwen3ForCausalLMResidualSID":
         return
-
     if args.use_chunked_loss_computer:
         raise ValueError(
-            "Residual SID SFT requires --use_chunked_loss_computer to be "
-            "disabled because the auxiliary loss needs final hidden states."
+            "Residual SID training requires --use_chunked_loss_computer to be "
+            "disabled because auxiliary losses need final hidden states."
         )
     if args.residual_sid_num_layers < 2:
         raise ValueError("--residual_sid_num_layers must be at least 2.")
     if args.residual_sid_loss_weight <= 0:
         raise ValueError("--residual_sid_loss_weight must be positive.")
+    expected_latent_steps = args.residual_sid_num_layers - 1
+    if args.latent_reasoning_num_steps != expected_latent_steps:
+        raise ValueError(
+            "--latent_reasoning_num_steps must equal "
+            "--residual_sid_num_layers - 1 because this mode inserts one "
+            "branch-conditioned thought before B/C/D. "
+            f"steps={args.latent_reasoning_num_steps}, "
+            f"expected={expected_latent_steps}."
+        )
+    if not 0.0 <= args.latent_reasoning_dropout < 1.0:
+        raise ValueError(
+            "--latent_reasoning_dropout must satisfy 0 <= dropout < 1."
+        )
+    if args.latent_reasoning_temperature <= 0:
+        raise ValueError(
+            "--latent_reasoning_temperature must remain positive for "
+            "backward-compatible argument validation, although it is ignored "
+            "by branch-conditioned interleaved reasoning."
+        )
+    if args.latent_reasoning_loss_weight != 0.0:
+        raise ValueError(
+            "Branch-conditioned interleaved reasoning intentionally uses no "
+            "auxiliary latent CE; set --latent_reasoning_loss_weight 0.0."
+        )
 
-    # The model and dataloader must tokenize with the exact same stg2 tokenizer.
-    # Override any stale path in DATASET_CONFIG instead of maintaining two sources.
+    if args.mask_latent_reasoning_lm_loss:
+        logger.warning(
+            "--mask_latent_reasoning_lm_loss is ignored in branch-conditioned "
+            "interleaved mode because no latent tokens are inserted "
+            "into the sequence."
+        )
+
     configured_base_model_dir = dataset_config.get("base_model_dir")
     if (
         configured_base_model_dir is not None
@@ -693,6 +782,11 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
             args.model_dir,
         )
     dataset_config["base_model_dir"] = args.model_dir
+
+    # Critical migration rule from the previous token-latent experiment:
+    # raw parquet must stay in the original format and the standard Qwen3
+    # dataset must be used.  No <latent_r*> tokens are injected anymore.
+    dataset_config["latent_reasoning_enabled"] = False
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_dir,
@@ -708,9 +802,7 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
     discovered = _discover_sid_layers(tokenizer)
     if args.residual_sid_layer_names:
         requested_names = list(args.residual_sid_layer_names)
-        discovered_by_name = {
-            item["name"]: item for item in discovered
-        }
+        discovered_by_name = {item["name"]: item for item in discovered}
         missing = [
             name for name in requested_names
             if name not in discovered_by_name
@@ -720,7 +812,8 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
                 f"Requested SID layers are absent from tokenizer: {missing}."
             )
         selected = [
-            discovered_by_name[name] for name in requested_names
+            discovered_by_name[name]
+            for name in requested_names
         ]
     else:
         selected = discovered
@@ -732,9 +825,9 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
         ]
         raise ValueError(
             f"Expected {args.residual_sid_num_layers} SID layers, but tokenizer "
-            f"discovery selected {len(selected)}. All discovered layers: {summary}. "
-            "Use --residual_sid_layer_names only when the tokenizer contains "
-            "additional unrelated <s_LAYER_ID> groups."
+            f"discovery selected {len(selected)}. All discovered layers: "
+            f"{summary}. Use --residual_sid_layer_names only when the tokenizer "
+            "contains additional unrelated <s_LAYER_ID> groups."
         )
 
     selected.sort(key=lambda item: item["start"])
@@ -746,15 +839,15 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
         asserted_sizes = list(args.residual_sid_layer_sizes)
         if asserted_sizes != sizes:
             raise ValueError(
-                f"Tokenizer-discovered SID sizes are {sizes}, but the optional "
-                f"assertion requested {asserted_sizes}."
+                f"Tokenizer-discovered SID sizes are {sizes}, but requested "
+                f"{asserted_sizes}."
             )
     if args.residual_sid_layer_starts:
         asserted_starts = list(args.residual_sid_layer_starts)
         if asserted_starts != starts:
             raise ValueError(
-                f"Tokenizer-discovered SID starts are {starts}, but the optional "
-                f"assertion requested {asserted_starts}."
+                f"Tokenizer-discovered SID starts are {starts}, but requested "
+                f"{asserted_starts}."
             )
 
     args.residual_sid_layer_names = names
@@ -782,62 +875,152 @@ def resolve_residual_sid_layout(args, dataset_config: Dict) -> None:
             or configured_range[1] < full_itemic_range[1]
         ):
             raise ValueError(
-                "DATASET_CONFIG.itemic_id_range does not cover all four "
-                f"discovered SID layers: configured={configured_range}, "
-                f"required={full_itemic_range}."
+                "DATASET_CONFIG.itemic_id_range does not cover all SID layers: "
+                f"configured={configured_range}, required={full_itemic_range}."
             )
 
     logger.info(
-        "Resolved residual SID layout from --model_dir tokenizer: "
-        "names=%s starts=%s sizes=%s sid_begin=%s sid_end=%s",
+        "Resolved residual SID + branch-conditioned interleaved latent layout: "
+        "names=%s starts=%s sizes=%s sid_begin=%s sid_end=%s "
+        "latent_steps=%s latent_dropout=%s latent_aux_loss_weight=%s",
         names,
         starts,
         sizes,
         args.residual_sid_begin_token_id,
         args.residual_sid_end_token_id,
+        args.latent_reasoning_num_steps,
+        args.latent_reasoning_dropout,
+        args.latent_reasoning_loss_weight,
     )
 
 
 def configure_residual_sid_model(config, args) -> None:
     if args.model_class != "Qwen3ForCausalLMResidualSID":
         return
+
     config.residual_sid_enabled = True
-    config.residual_sid_layer_names = list(args.residual_sid_layer_names)
-    config.residual_sid_layer_starts = list(args.residual_sid_layer_starts)
-    config.residual_sid_layer_sizes = list(args.residual_sid_layer_sizes)
+    config.residual_sid_layer_names = list(
+        args.residual_sid_layer_names
+    )
+    config.residual_sid_layer_starts = list(
+        args.residual_sid_layer_starts
+    )
+    config.residual_sid_layer_sizes = list(
+        args.residual_sid_layer_sizes
+    )
     config.residual_sid_begin_token_id = int(
         args.residual_sid_begin_token_id
     )
-    config.residual_sid_end_token_id = int(args.residual_sid_end_token_id)
-    config.residual_sid_dropout = float(args.residual_sid_dropout)
-    config.architectures = ["Qwen3ForCausalLMResidualSID"]
+    config.residual_sid_end_token_id = int(
+        args.residual_sid_end_token_id
+    )
+    config.residual_sid_dropout = float(
+        args.residual_sid_dropout
+    )
+
+    config.latent_reasoning_enabled = True
+    config.latent_reasoning_mode = (
+        "branch_conditioned_interleaved"
+    )
+    config.latent_reasoning_num_steps = int(
+        args.latent_reasoning_num_steps
+    )
+    config.latent_reasoning_num_transitions = int(
+        args.latent_reasoning_num_steps
+    )
+    config.latent_reasoning_dropout = float(
+        args.latent_reasoning_dropout
+    )
+    # No soft-SID distribution is used in this mode.
+    config.latent_reasoning_conditioning = "hard_previous_sid"
+    config.latent_reasoning_update = "thought_then_formal_residual"
+    config.latent_reasoning_loss_type = (
+        "none_task_supervised"
+    )
+    config.latent_reasoning_loss_weight = 0.0
+
+    # The previous experiment used literal <|latent_r*|> tokens.  Keep the
+    # dynamic-refinement config unambiguous even when the starting tokenizer
+    # was expanded by that experiment.  Those vocabulary rows may still exist
+    # for checkpoint comparability, but they are not part of the sequence or
+    # the reasoning mechanism anymore.
+    config.latent_reasoning_tokens = []
+    config.latent_reasoning_token_ids = []
+    config.latent_reasoning_num_tokens = 0
+
+    config.architectures = [
+        "Qwen3ForCausalLMResidualSID"
+    ]
 
 
 def save_residual_sid_config(args) -> None:
     if args.model_class != "Qwen3ForCausalLMResidualSID":
         return
+
     payload = {
-        "architectures": ["Qwen3ForCausalLMResidualSID"],
+        "architectures": [
+            "Qwen3ForCausalLMResidualSID"
+        ],
         "residual_sid_enabled": True,
-        "residual_sid_layer_names": list(args.residual_sid_layer_names),
-        "residual_sid_layer_starts": list(args.residual_sid_layer_starts),
-        "residual_sid_layer_sizes": list(args.residual_sid_layer_sizes),
+        "residual_sid_layer_names": list(
+            args.residual_sid_layer_names
+        ),
+        "residual_sid_layer_starts": list(
+            args.residual_sid_layer_starts
+        ),
+        "residual_sid_layer_sizes": list(
+            args.residual_sid_layer_sizes
+        ),
         "residual_sid_begin_token_id": int(
             args.residual_sid_begin_token_id
         ),
-        "residual_sid_end_token_id": int(args.residual_sid_end_token_id),
-        "residual_sid_dropout": float(args.residual_sid_dropout),
-        "residual_sid_loss_weight": float(args.residual_sid_loss_weight),
+        "residual_sid_end_token_id": int(
+            args.residual_sid_end_token_id
+        ),
+        "residual_sid_dropout": float(
+            args.residual_sid_dropout
+        ),
+        "residual_sid_loss_weight": float(
+            args.residual_sid_loss_weight
+        ),
         "mask_residual_sid_lm_loss": bool(
             args.mask_residual_sid_lm_loss
         ),
+        "latent_reasoning_enabled": True,
+        "latent_reasoning_mode": (
+            "branch_conditioned_interleaved"
+        ),
+        "latent_reasoning_num_steps": int(
+            args.latent_reasoning_num_steps
+        ),
+        "latent_reasoning_num_transitions": int(
+            args.latent_reasoning_num_steps
+        ),
+        "latent_reasoning_dropout": float(
+            args.latent_reasoning_dropout
+        ),
+        "latent_reasoning_conditioning": "hard_previous_sid",
+        "latent_reasoning_update": "thought_then_formal_residual",
+        "latent_reasoning_loss_type": (
+            "none_task_supervised"
+        ),
+        "latent_reasoning_loss_weight": 0.0,
     }
+
     with open(
-        os.path.join(args.output_dir, "residual_sid_config.json"),
+        os.path.join(
+            args.output_dir,
+            "residual_sid_config.json",
+        ),
         "w",
         encoding="utf-8",
     ) as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        json.dump(
+            payload,
+            handle,
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def find_residual_sid_examples(
@@ -1023,10 +1206,11 @@ def initialize_model(
 
     # Freeze parameters if requested.
     #
-    # Stage1 of the residual-SID model must train three kinds of parameters:
+    # Stage1 of the residual-SID model must train:
     #   1. newly added itemic token rows in embed_tokens/lm_head;
-    #   2. sid_residual_blocks, which are newly introduced by the residual model;
-    #   3. nothing else in the transformer backbone.
+    #   2. sid_residual_blocks;
+    #   3. latent_reasoning_blocks (three interleaved thoughts before B/C/D);
+    # while the transformer backbone remains frozen.
     #
     # EmbeddingGradientMasker, initialized later with
     # start_optimize_embedding_index, keeps the original vocabulary rows fixed.
@@ -1038,7 +1222,10 @@ def initialize_model(
                 or "lm_head" in name
                 or (
                     args.model_class == "Qwen3ForCausalLMResidualSID"
-                    and "sid_residual_blocks" in name
+                    and (
+                        "sid_residual_blocks" in name
+                        or "latent_reasoning_blocks" in name
+                    )
                 )
             )
             param.requires_grad = keep_trainable
@@ -1048,10 +1235,19 @@ def initialize_model(
                 name for name, param in model.named_parameters()
                 if "sid_residual_blocks" in name and param.requires_grad
             ]
+            latent_trainable = [
+                name for name, param in model.named_parameters()
+                if "latent_reasoning_blocks" in name and param.requires_grad
+            ]
             if not residual_trainable:
                 raise RuntimeError(
                     "--freeze_llm is enabled for the residual-SID model, "
                     "but no sid_residual_blocks parameters are trainable."
+                )
+            if not latent_trainable:
+                raise RuntimeError(
+                    "--freeze_llm is enabled for branch-conditioned latent reasoning, "
+                    "but no latent_reasoning_blocks parameters are trainable."
                 )
 
     # Print trainable parameters
@@ -1203,7 +1399,13 @@ def compute_forward_backward(
     embedding_masker: Optional[EmbeddingGradientMasker],
     optimizer: torch.optim.Optimizer,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute ordinary LM loss plus integrated residual-SID loss."""
+    """Compute the original LM + residual SID objective.
+
+    Branch-conditioned latent thoughts receive no auxiliary CE.  Each thought
+    is inside the formal teacher-forced B/C/D transition, so downstream
+    residual CE trains it end-to-end. SID-A stays the ordinary LM CE on the
+    raw SID_BEGIN hidden.
+    """
     input_ids = batch["input_ids"]
     loss_mask = batch["loss_mask"]
     attention_mask = batch.get("attention_mask", None)
@@ -1211,12 +1413,16 @@ def compute_forward_backward(
     position_ids = batch.get("position_ids", None)
 
     input_ids = input_ids * (input_ids > 0).to(
-        torch.int64, non_blocking=True
+        torch.int64,
+        non_blocking=True,
     )
-    metric_loss_mask = loss_mask.view_as(input_ids).clone()
+    metric_loss_mask = (
+        loss_mask.view_as(input_ids).clone()
+    )
 
     residual_anchor_indices = None
     residual_target_global_ids = None
+
     if args.model_class == "Qwen3ForCausalLMResidualSID":
         (
             residual_anchor_indices,
@@ -1236,15 +1442,17 @@ def compute_forward_backward(
             "cu_seqlens": cu_seqlens,
             "position_ids": position_ids,
         }
+
         if args.model_class == "Qwen3ForCausalLMResidualSID":
             model_forward_kwargs.update(
                 {
-                    "residual_sid_anchor_indices": residual_anchor_indices,
-                    "residual_sid_target_global_ids": (
-                        residual_target_global_ids
-                    ),
+                    "residual_sid_anchor_indices":
+                        residual_anchor_indices,
+                    "residual_sid_target_global_ids":
+                        residual_target_global_ids,
                 }
             )
+
         output = model(**model_forward_kwargs)
         logits = output.logits
 
@@ -1254,104 +1462,159 @@ def compute_forward_backward(
             dtype=input_ids.dtype,
             device=input_ids.device,
         )
-        labels = torch.cat([input_ids[:, 1:], pad], dim=-1)
+        labels = torch.cat(
+            [input_ids[:, 1:], pad],
+            dim=-1,
+        )
         labels = (
             labels * loss_mask
             + loss_fn.ignore_index * (1 - loss_mask)
         )
 
-        if (
-            args.model_class == "Qwen3ForCausalLMResidualSID"
-            and args.mask_residual_sid_lm_loss
+        has_residual_examples = (
+            args.model_class
+            == "Qwen3ForCausalLMResidualSID"
             and residual_anchor_indices is not None
             and residual_anchor_indices.numel() > 0
+        )
+
+        if (
+            has_residual_examples
+            and args.mask_residual_sid_lm_loss
         ):
             b = residual_anchor_indices[:, 0]
             p = residual_anchor_indices[:, 1]
-            num_layers = len(args.residual_sid_layer_starts)
+            num_layers = len(
+                args.residual_sid_layer_starts
+            )
 
-            # p predicts a and remains ordinary LM loss.
-            # p+1...p+L-1 predict b/c/... and are replaced by residual CE.
-            # p+L predicts sid_end; inference appends it deterministically.
+            # p predicts SID-A and remains ordinary SFT LM loss on the raw
+            # SID_BEGIN hidden.  Before each residual B/C/D prediction, the
+            # matching latent thought consumes the teacher-forced previous
+            # hard SID, exactly mirroring branch-conditioned inference.
+            #
+            # p+1...p+L-1 predict B/C/D via residual CE.
+            # p+L predicts deterministic SID_END.
             for offset in range(1, num_layers + 1):
-                labels[b, p + offset] = loss_fn.ignore_index
+                labels[
+                    b,
+                    p + offset,
+                ] = loss_fn.ignore_index
 
-            # Keep b/c/... in metric accounting because residual CE is
-            # scattered there below; exclude deterministic sid_end.
-            metric_loss_mask[b, p + num_layers] = 0
+            metric_loss_mask[
+                b,
+                p + num_layers,
+            ] = 0
 
         lm_loss, per_token_loss = compute_loss_fn(
-            logits, labels=labels
+            logits,
+            labels=labels,
         )
-        per_token_loss = per_token_loss.to(lm_loss.device)
+        per_token_loss = per_token_loss.to(
+            lm_loss.device
+        )
 
-        loss = lm_loss
         residual_sid_loss = getattr(
-            output, "residual_sid_loss", None
+            output,
+            "residual_sid_loss",
+            None,
         )
         residual_sid_token_losses = getattr(
-            output, "residual_sid_token_losses", None
+            output,
+            "residual_sid_token_losses",
+            None,
         )
+        lm_token_count = (
+            labels != loss_fn.ignore_index
+        ).sum().to(
+            device=lm_loss.device,
+            dtype=torch.float32,
+        )
+
+        numerator = (
+            lm_loss * lm_token_count
+        )
+        denominator = lm_token_count
+
         if (
             residual_sid_loss is not None
             and residual_sid_token_losses is not None
         ):
-            lm_token_count = (labels != loss_fn.ignore_index).sum().to(
-                dtype=torch.float32
-            )
             residual_token_count = torch.tensor(
                 residual_sid_token_losses.numel(),
                 device=lm_loss.device,
                 dtype=torch.float32,
             )
             weighted_residual_count = (
-                residual_token_count * args.residual_sid_loss_weight
+                residual_token_count
+                * args.residual_sid_loss_weight
             )
-            denominator = (
-                lm_token_count + weighted_residual_count
-            ).clamp_min(1.0)
-            loss = (
-                lm_loss * lm_token_count
+
+            numerator = (
+                numerator
                 + residual_sid_loss
                 * weighted_residual_count
-            ) / denominator
+            )
+            denominator = (
+                denominator
+                + weighted_residual_count
+            )
 
+            # Preserve the repository's token-level metrics placement for the
+            # residual B/C/D losses.
             b = residual_anchor_indices[:, 0]
             p = residual_anchor_indices[:, 1]
+
             for residual_index in range(
                 residual_sid_token_losses.shape[1]
             ):
-                # residual_index 0 is the loss for SID layer 2 and belongs
-                # to predictor position p+1.
-                predictor_positions = p + 1 + residual_index
-                residual_values = residual_sid_token_losses[
-                    :, residual_index
-                ].detach().to(
-                    device=per_token_loss.device,
-                    dtype=per_token_loss.dtype,
+                predictor_positions = (
+                    p + 1 + residual_index
+                )
+                residual_values = (
+                    residual_sid_token_losses[
+                        :,
+                        residual_index,
+                    ]
+                    .detach()
+                    .to(
+                        device=per_token_loss.device,
+                        dtype=per_token_loss.dtype,
+                    )
                 )
 
-                # The repository CrossEntropyLoss normally returns a flattened
-                # per-token tensor [batch * sequence]. Keep that representation
-                # because compute_metrics() also consumes flattened sample masks.
-                # Support a 2-D implementation as well for compatibility.
                 if per_token_loss.ndim == 1:
                     sequence_length = labels.shape[-1]
                     flat_positions = (
-                        b.to(torch.long) * sequence_length
-                        + predictor_positions.to(torch.long)
+                        b.to(torch.long)
+                        * sequence_length
+                        + predictor_positions.to(
+                            torch.long
+                        )
                     )
-                    per_token_loss[flat_positions] = residual_values
+                    per_token_loss[
+                        flat_positions
+                    ] = residual_values
+
                 elif per_token_loss.ndim == 2:
                     per_token_loss[
                         b.to(torch.long),
-                        predictor_positions.to(torch.long),
+                        predictor_positions.to(
+                            torch.long
+                        ),
                     ] = residual_values
+
                 else:
                     raise RuntimeError(
                         "Unsupported per_token_loss shape: "
-                        f"{tuple(per_token_loss.shape)}; expected 1-D or 2-D."
+                        f"{tuple(per_token_loss.shape)}; "
+                        "expected 1-D or 2-D."
                     )
+
+        loss = (
+            numerator
+            / denominator.clamp_min(1.0)
+        )
 
     with Timer("bwd"):
         loss.backward()
@@ -1360,12 +1623,24 @@ def compute_forward_backward(
             args.start_optimize_embedding_index > 0
             and embedding_masker is not None
         ):
-            embedding_masker.apply_gradient_mask(optimizer)
+            embedding_masker.apply_gradient_mask(
+                optimizer
+            )
 
-        if args.max_grad_norm and args.max_grad_norm > 0:
-            clip_grad_norm(model, args.max_grad_norm)
+        if (
+            args.max_grad_norm
+            and args.max_grad_norm > 0
+        ):
+            clip_grad_norm(
+                model,
+                args.max_grad_norm,
+            )
 
-    return loss, per_token_loss, metric_loss_mask
+    return (
+        loss,
+        per_token_loss,
+        metric_loss_mask,
+    )
 
 
 def compute_metrics(
@@ -1654,6 +1929,7 @@ def train():
     # as Qwen3ForCausalLM. Do not pass the custom model class into the original
     # dataloader registry, which only maps the standard Qwen3 data class.
     dataset_config["model_class"] = "Qwen3ForCausalLM"
+    dataset_config["latent_reasoning_enabled"] = False
     if args.max_length:
         dataset_config["max_length"] = args.max_length
 

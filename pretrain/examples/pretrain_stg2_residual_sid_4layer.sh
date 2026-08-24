@@ -2,21 +2,36 @@
 set -euo pipefail
 set -x
 
-# OpenOneRec-Res Stage2: full-parameter residual SID pretraining.
-PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/pretrain
-STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature
-STG1_STEP=${STG1_STEP:-18500}
+# OpenOneRec-Res Stage2 + Branch-Conditioned Interleaved Latent 3:
+# full-parameter residual SID + hard-branch thoughts before B/C/D branch-conditioned interleaved latent anchors pretraining.
+PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-latent/pretrain
+
+STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature_branch_interleaved_latent3
+
+# Keep your previous conversion checkpoint convention.
+# Change this only if you choose another real Stage1 checkpoint.
+STG1_STEP=${STG1_STEP:-22000}
+
 MODEL_DIR=${STG1_OUTPUT_DIR}/step${STG1_STEP}/global_step${STG1_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature_branch_interleaved_latent3
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
+
 RESIDUAL_SID_NUM_LAYERS=4
 RESIDUAL_SID_DROPOUT=0.1
 RESIDUAL_SID_LOSS_WEIGHT=1.0
-MAX_LENGTH=${MAX_LENGTH:-22768}
+
+# 3 interleaved latent thoughts: after hard A/B/C, before formal B/C/D.
+LATENT_REASONING_NUM_STEPS=3
+LATENT_REASONING_DROPOUT=0.1
+# No auxiliary latent CE. Formal residual B/C/D losses supervise each thought end-to-end.
+LATENT_REASONING_LOSS_WEIGHT=0.0
+
+MAX_LENGTH=${MAX_LENGTH:-13768}
 MASTER_PORT=${MASTER_PORT:-8499}
 
 cd "${PRETRAIN_DIR}"
 mkdir -p "${OUTPUT_DIR}" /tmp/_wids_cache
+
 for required_path in \
   "${MODEL_DIR}/config.json" \
   "${MODEL_DIR}/tokenizer_config.json" \
@@ -24,9 +39,13 @@ for required_path in \
   "${DATASET_CONFIG}" \
   "${PRETRAIN_DIR}/torchrun_ompi_wrapper.py" \
   "${PRETRAIN_DIR}/recipes/train_qwen3_residual_sid.py" \
-  "${PRETRAIN_DIR}/tools/verify_residual_sid_layout.py"
+  "${PRETRAIN_DIR}/tools/verify_residual_sid_layout.py" \
+  "${PRETRAIN_DIR}/tools/verify_dynamic_latent_model.py"
 do
-  [[ -e "${required_path}" ]] || { echo "ERROR: missing ${required_path}" >&2; exit 1; }
+  [[ -e "${required_path}" ]] || {
+    echo "ERROR: missing ${required_path}" >&2
+    exit 1
+  }
 done
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
@@ -45,6 +64,7 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 STDOUT_LOG=${OUTPUT_DIR}/stdout.log
 STDERR_LOG=${OUTPUT_DIR}/stderr.log
 SID_LAYOUT_JSON=${OUTPUT_DIR}/sid_layout.json
+LATENT_VERIFY_LOG=${OUTPUT_DIR}/dplr_input_verify.log
 SCRIPT_FILE=$(readlink -f "$0")
 
 python tools/verify_residual_sid_layout.py \
@@ -52,20 +72,31 @@ python tools/verify_residual_sid_layout.py \
   --expected_layers "${RESIDUAL_SID_NUM_LAYERS}" \
   | tee "${SID_LAYOUT_JSON}"
 
+# Stage2 must load the trained three branch-conditioned interleaved latent transition blocks from Stage1.
+python tools/verify_dynamic_latent_model.py \
+  --model "${MODEL_DIR}" \
+  | tee "${LATENT_VERIFY_LOG}"
+
 TIE_WORD_EMBEDDINGS=$(python - "${MODEL_DIR}" <<'PY'
 import sys
 from transformers import AutoConfig
-config = AutoConfig.from_pretrained(sys.argv[1], trust_remote_code=True)
+
+config = AutoConfig.from_pretrained(
+    sys.argv[1],
+    trust_remote_code=True,
+)
 print("true" if bool(config.tie_word_embeddings) else "false")
 PY
 )
+
 USE_TIE_WEIGHTS_ARGS=()
-[[ "${TIE_WORD_EMBEDDINGS}" != "true" ]] || USE_TIE_WEIGHTS_ARGS+=(--use_tie_weights)
+[[ "${TIE_WORD_EMBEDDINGS}" != "true" ]] || \
+  USE_TIE_WEIGHTS_ARGS+=(--use_tie_weights)
 
 {
   echo "$(date '+%Y-%m-%d %H:%M:%S')"
   echo "script: ${SCRIPT_FILE}"
-  echo "stage: residual_sid_stage2"
+  echo "stage: residual_sid_stage2_branch_interleaved_latent3"
   echo "stg1_step: ${STG1_STEP}"
   echo "model_dir: ${MODEL_DIR}"
   echo "output_dir: ${OUTPUT_DIR}"
@@ -73,11 +104,16 @@ USE_TIE_WEIGHTS_ARGS=()
   echo "max_length: ${MAX_LENGTH}"
   echo "tie_word_embeddings: ${TIE_WORD_EMBEDDINGS}"
   echo "sid_layout_json: ${SID_LAYOUT_JSON}"
+  echo "latent_verify_log: ${LATENT_VERIFY_LOG}"
+  echo "latent_reasoning_num_steps: ${LATENT_REASONING_NUM_STEPS}"
+  echo "latent_reasoning_dropout: ${LATENT_REASONING_DROPOUT}"
+  echo "latent_reasoning_loss_weight: ${LATENT_REASONING_LOSS_WEIGHT}"
   echo "========================="
 } >> "${OUTPUT_DIR}/task_info.log"
 
 # No --freeze_llm: all parameters are trainable.
-# No --allow_random_init_params: residual weights must come from Stage1.
+# No --allow_random_init_params:
+# residual + branch-conditioned interleaved latent-anchor weights must come from the converted Stage1 model.
 torchrun \
   --nnodes=1 \
   --nproc_per_node=8 \
@@ -94,6 +130,9 @@ torchrun \
   --residual_sid_dropout "${RESIDUAL_SID_DROPOUT}" \
   --residual_sid_loss_weight "${RESIDUAL_SID_LOSS_WEIGHT}" \
   --mask_residual_sid_lm_loss \
+  --latent_reasoning_num_steps "${LATENT_REASONING_NUM_STEPS}" \
+  --latent_reasoning_dropout "${LATENT_REASONING_DROPOUT}" \
+  --latent_reasoning_loss_weight "${LATENT_REASONING_LOSS_WEIGHT}" \
   --monitor_datasource_loss \
   --monitor_datasource_cnt \
   --max_length "${MAX_LENGTH}" \
@@ -103,7 +142,7 @@ torchrun \
   --max_grad_norm 1.0 \
   --lr_scheduler_type cosine \
   --num_warmup_steps 500 \
-  --num_training_steps 5000 \
+  --num_training_steps 20000 \
   --save_checkpoint_per_step 500 \
   --minibatch_size 12384 \
   --logging_per_step 50 \

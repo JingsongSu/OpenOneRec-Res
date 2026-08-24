@@ -1,21 +1,43 @@
-"""Qwen3 causal LM with trainable residual transitions for hierarchical SID tokens.
+"""Qwen3 causal LM with branch-conditioned interleaved latent reasoning.
 
-The backbone still predicts the first SID layer from the hidden state at
-``<|sid_begin|>``.  Later SID layers are predicted by lightweight residual
-blocks:
+This variant interleaves one latent "thinking" transition with every formal
+residual SID transition after SID-A.  The latent step is conditioned on the
+*actual previous hard SID* and the current branch-specific hidden state.
 
-    h_0 = backbone_hidden_at_sid_begin
-    h_l = h_{l-1} + R_{l-1}([h_0, E(target_{l-1})])
+Training (teacher forced):
 
-During SFT the previous SID token uses teacher forcing.  During inference the
-first layer is Top-B once, while every later layer is greedy Top-1 for each of
-those B paths.
+    hA = backbone_hidden_at_sid_begin
+    A  = ordinary LM target
+
+    # Before predicting B, think with the gold hard A.
+    tB = hA + L0([hA, E(A)])
+    hB = tB + R0([tB, E(A)])
+    B  = head_B(hB)
+
+    # Before predicting C, think with the gold hard B.  hB already contains A.
+    tC = hB + L1([hB, E(B)])
+    hC = tC + R1([tC, E(B)])
+    C  = head_C(hC)
+
+    # Before predicting D, think with the gold hard C.  hC contains A/B.
+    tD = hC + L2([hC, E(C)])
+    hD = tD + R2([tD, E(C)])
+    D  = head_D(hD)
+
+Inference uses the exact same graph, except A/B/C are the hard SID values on
+each surviving beam branch.  Consequently each latent step sees what that
+branch actually generated before it reasons about the next SID layer.
+
+There are three latent reasoning blocks for a four-layer A/B/C/D SID.  There
+is no soft-SID lookahead, no latent token, no auxiliary latent CE, and no
+inference-only score fusion.  The original formal A CE and residual B/C/D CE
+are the only training objectives.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -44,24 +66,31 @@ class ResidualSIDBlock(nn.Module):
 
 @dataclass
 class ResidualSIDCausalLMOutput(CausalLMOutputWithPast):
-    """Causal-LM output plus the auxiliary residual-SID loss."""
+    """Causal-LM output plus residual-SID loss fields."""
 
     residual_sid_loss: Optional[torch.FloatTensor] = None
     residual_sid_token_losses: Optional[torch.FloatTensor] = None
     residual_sid_count: Optional[torch.LongTensor] = None
 
+    # Kept only for compatibility with the training loop API.  Branch-
+    # conditioned latent reasoning uses no separate auxiliary latent CE.
+    latent_reasoning_loss: Optional[torch.FloatTensor] = None
+    latent_reasoning_count: Optional[torch.LongTensor] = None
+
 
 class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
-    """Qwen3 whose SFT checkpoint contains the residual SID blocks."""
+    """Qwen3 with formal residual SID blocks and interleaved latent blocks."""
 
     def __init__(self, config):
         super().__init__(config)
 
         starts = tuple(
-            int(x) for x in getattr(config, "residual_sid_layer_starts", ())
+            int(x)
+            for x in getattr(config, "residual_sid_layer_starts", ())
         )
         sizes = tuple(
-            int(x) for x in getattr(config, "residual_sid_layer_sizes", ())
+            int(x)
+            for x in getattr(config, "residual_sid_layer_sizes", ())
         )
         if len(starts) < 2 or len(starts) != len(sizes):
             raise ValueError(
@@ -84,9 +113,70 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
             getattr(config, "residual_sid_dropout", 0.1)
         )
 
+        # Formal residual transitions: A->B, B->C, C->D.
         self.sid_residual_blocks = nn.ModuleList(
             ResidualSIDBlock(config.hidden_size, self.residual_sid_dropout)
             for _ in range(self.residual_sid_num_layers - 1)
+        )
+
+        self.latent_reasoning_enabled = bool(
+            getattr(config, "latent_reasoning_enabled", True)
+        )
+        self.latent_reasoning_mode = str(
+            getattr(
+                config,
+                "latent_reasoning_mode",
+                "branch_conditioned_interleaved",
+            )
+        )
+        # Here num_steps means the number of interleaved latent thoughts,
+        # namely one before B/C/D for four SID layers.
+        self.latent_reasoning_num_steps = int(
+            getattr(
+                config,
+                "latent_reasoning_num_steps",
+                self.residual_sid_num_layers - 1,
+            )
+        )
+        self.latent_reasoning_dropout = float(
+            getattr(config, "latent_reasoning_dropout", 0.1)
+        )
+        self.latent_reasoning_loss_weight = float(
+            getattr(config, "latent_reasoning_loss_weight", 0.0)
+        )
+
+        expected_steps = self.residual_sid_num_layers - 1
+        if self.latent_reasoning_enabled:
+            if self.latent_reasoning_mode != "branch_conditioned_interleaved":
+                raise ValueError(
+                    "latent_reasoning_mode must be "
+                    "'branch_conditioned_interleaved'."
+                )
+            if self.latent_reasoning_num_steps != expected_steps:
+                raise ValueError(
+                    "Branch-conditioned interleaved reasoning requires one "
+                    "latent step before every SID layer after A: "
+                    f"steps={self.latent_reasoning_num_steps}, "
+                    f"expected={expected_steps}."
+                )
+            if not 0.0 <= self.latent_reasoning_dropout < 1.0:
+                raise ValueError(
+                    "latent_reasoning_dropout must satisfy 0 <= dropout < 1."
+                )
+            if self.latent_reasoning_loss_weight != 0.0:
+                raise ValueError(
+                    "branch_conditioned_interleaved uses only the formal "
+                    "A/B/C/D task losses; latent_reasoning_loss_weight must "
+                    "remain 0.0."
+                )
+
+        # Three branch-conditioned thought blocks for B/C/D.
+        self.latent_reasoning_blocks = nn.ModuleList(
+            ResidualSIDBlock(
+                config.hidden_size,
+                self.latent_reasoning_dropout,
+            )
+            for _ in range(expected_steps)
         )
 
     def _restricted_logits(
@@ -97,24 +187,13 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
         start = self.residual_sid_layer_starts[layer]
         size = self.residual_sid_layer_sizes[layer]
         weight = self.lm_head.weight[start : start + size]
-        # Large matrix multiply uses the model parameter dtype; CE is FP32.
         return F.linear(hidden.to(weight.dtype), weight).float()
 
-    def compute_residual_sid_loss(
+    def _validate_aux_inputs(
         self,
-        last_hidden_state: torch.Tensor,
         anchor_indices: torch.LongTensor,
         target_global_ids: torch.LongTensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute teacher-forced residual loss for SID layers 1..L-1.
-
-        Args:
-            last_hidden_state: [batch, sequence, hidden].
-            anchor_indices: [num_sid, 2], columns are batch index and the
-                position of ``<|sid_begin|>``.
-            target_global_ids: [num_sid, num_layers], containing a/b/c...
-                global vocabulary IDs.
-        """
+    ) -> None:
         if anchor_indices.ndim != 2 or anchor_indices.shape[-1] != 2:
             raise ValueError("anchor_indices must have shape [N, 2].")
         if (
@@ -125,28 +204,108 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
                 "target_global_ids must have shape "
                 f"[N, {self.residual_sid_num_layers}]."
             )
+        if anchor_indices.shape[0] != target_global_ids.shape[0]:
+            raise ValueError(
+                "anchor_indices and target_global_ids must have the same N."
+            )
 
-        batch_index = anchor_indices[:, 0].long()
-        sequence_index = anchor_indices[:, 1].long()
-        anchor = last_hidden_state[batch_index, sequence_index]
-        current = anchor
+    def _sid_layer_ce(
+        self,
+        hidden: torch.Tensor,
+        target_global_ids: torch.LongTensor,
+        layer: int,
+    ) -> torch.Tensor:
+        logits = self._restricted_logits(hidden, layer)
+        local_target = (
+            target_global_ids[:, layer].long()
+            - self.residual_sid_layer_starts[layer]
+        )
+        layer_size = self.residual_sid_layer_sizes[layer]
+        if torch.any(local_target < 0) or torch.any(local_target >= layer_size):
+            raise ValueError(
+                f"Out-of-range target for SID layer {layer}: "
+                f"layer_size={layer_size}."
+            )
+        return F.cross_entropy(
+            logits,
+            local_target,
+            reduction="none",
+        )
+
+    def _interleaved_transition(
+        self,
+        current: torch.Tensor,
+        previous_embedding: torch.Tensor,
+        transition_index: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Think on the current hard branch, then perform formal transition.
+
+        Args:
+            current: branch-specific state before predicting the next SID.
+            previous_embedding: embedding of the actual previous hard SID.
+            transition_index: 0/1/2 for A->B/B->C/C->D.
+
+        Returns:
+            thought: hidden state after the latent reasoning block.
+            next_hidden: state used to predict the next formal SID.
+        """
+        fused_latent = torch.cat(
+            [current, previous_embedding],
+            dim=-1,
+        )
+        thought = (
+            current
+            + self.latent_reasoning_blocks[transition_index](fused_latent)
+        )
+
+        fused_formal = torch.cat(
+            [thought, previous_embedding],
+            dim=-1,
+        )
+        next_hidden = (
+            thought
+            + self.sid_residual_blocks[transition_index](fused_formal)
+        )
+        return thought, next_hidden
+
+    def compute_residual_sid_loss(
+        self,
+        raw_anchor: torch.Tensor,
+        target_global_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Teacher-forced branch-conditioned loss for SID B/C/D.
+
+        Training uses the gold previous SID at each step, exactly matching the
+        inference graph where each surviving beam uses its own selected hard
+        previous SID.  The only difference is teacher forcing versus beam
+        selection.
+        """
+        if raw_anchor.ndim != 2:
+            raise ValueError("raw_anchor must have shape [N, hidden].")
+        if (
+            target_global_ids.ndim != 2
+            or target_global_ids.shape[-1] != self.residual_sid_num_layers
+        ):
+            raise ValueError(
+                "target_global_ids must have shape "
+                f"[N, {self.residual_sid_num_layers}]."
+            )
+
+        current = raw_anchor
         token_losses = []
 
         for layer in range(1, self.residual_sid_num_layers):
             previous_global_id = target_global_ids[:, layer - 1].long()
             previous_embedding = self.model.embed_tokens(previous_global_id)
-            fused = torch.cat([anchor, previous_embedding], dim=-1)
-            current = current + self.sid_residual_blocks[layer - 1](fused)
-
-            logits = self._restricted_logits(current, layer)
-            local_target = (
-                target_global_ids[:, layer].long()
-                - self.residual_sid_layer_starts[layer]
+            _, current = self._interleaved_transition(
+                current=current,
+                previous_embedding=previous_embedding,
+                transition_index=layer - 1,
             )
-            layer_loss = F.cross_entropy(
-                logits,
-                local_target,
-                reduction="none",
+            layer_loss = self._sid_layer_ce(
+                hidden=current,
+                target_global_ids=target_global_ids,
+                layer=layer,
             )
             token_losses.append(layer_loss)
 
@@ -202,7 +361,6 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
             hidden_slice = logits_to_keep
 
         if self.chunked_loss_computer:
-            # Retains the original repository's chunked-loss contract.
             logits = last_hidden_state[:, hidden_slice, :]
         else:
             logits = self.lm_head(last_hidden_state[:, hidden_slice, :])
@@ -218,17 +376,26 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
         residual_sid_loss = None
         residual_sid_token_losses = None
         residual_sid_count = None
+
         if (
             residual_sid_anchor_indices is not None
             and residual_sid_target_global_ids is not None
             and residual_sid_anchor_indices.numel() > 0
         ):
-            residual_sid_loss, residual_sid_token_losses = (
-                self.compute_residual_sid_loss(
-                    last_hidden_state=last_hidden_state,
-                    anchor_indices=residual_sid_anchor_indices,
-                    target_global_ids=residual_sid_target_global_ids,
-                )
+            self._validate_aux_inputs(
+                residual_sid_anchor_indices,
+                residual_sid_target_global_ids,
+            )
+            batch_index = residual_sid_anchor_indices[:, 0].long()
+            sequence_index = residual_sid_anchor_indices[:, 1].long()
+            raw_anchor = last_hidden_state[batch_index, sequence_index]
+
+            (
+                residual_sid_loss,
+                residual_sid_token_losses,
+            ) = self.compute_residual_sid_loss(
+                raw_anchor=raw_anchor,
+                target_global_ids=residual_sid_target_global_ids,
             )
             residual_sid_count = torch.tensor(
                 residual_sid_token_losses.numel(),
@@ -254,4 +421,6 @@ class Qwen3ForCausalLMResidualSID(Qwen3ForCausalLM):
             residual_sid_loss=residual_sid_loss,
             residual_sid_token_losses=residual_sid_token_losses,
             residual_sid_count=residual_sid_count,
+            latent_reasoning_loss=None,
+            latent_reasoning_count=None,
         )
