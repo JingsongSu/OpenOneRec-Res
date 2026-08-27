@@ -5,10 +5,11 @@ set -e
 
 # Configuration
 # Both general and onerec use datasets starting with pretrain
-GENERAL_TEXT_PATH="../raw_data/general_text/pretrain"
-REC_DATA_PATH="../raw_data/onerec_data"
-OUTPUT_DIR="../output/split_data_pretrain"
-MAX_ROWS=1000
+GENERAL_TEXT_PATH="/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/raw_data/general_text/pretrain/empty"
+# GENERAL_TEXT_PATH="../raw_data/general_text/pretrain/OpenOneRec-General-Pretrain"
+REC_DATA_PATH="/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/output/only_seq_add_feature_time/pretrain"
+OUTPUT_DIR="/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/output/split_data_pretrain_only_seq_add_feature_time"
+MAX_ROWS=100000
 ENGINE="pyarrow"
 
 # Check if paths exist
