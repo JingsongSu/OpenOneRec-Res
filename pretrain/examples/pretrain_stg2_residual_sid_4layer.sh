@@ -142,7 +142,7 @@ torchrun \
   --max_grad_norm 1.0 \
   --lr_scheduler_type cosine \
   --num_warmup_steps 500 \
-  --num_training_steps 20000 \
+  --num_training_steps 5000 \
   --save_checkpoint_per_step 500 \
   --minibatch_size 12384 \
   --logging_per_step 50 \
