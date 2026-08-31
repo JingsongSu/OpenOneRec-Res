@@ -3,16 +3,16 @@ set -euo pipefail
 set -x
 
 # OpenOneRec-Res SFT + Branch-Conditioned Interleaved Latent 3 from Stage2.
-PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-latent/pretrain
+PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain
 
-STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature_branch_interleaved_latent3
+STG2_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature_latent_time
 
 # Keep your previous conversion checkpoint convention.
 # Change this only if you choose another real Stage2 checkpoint.
 STG2_STEP=${STG2_STEP:-20000}
 
 MODEL_DIR=${STG2_OUTPUT_DIR}/step${STG2_STEP}/global_step${STG2_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_full_residual_add_feature_branch_interleaved_latent3
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/sft_full_residual_add_feature_latent_time_daily
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/sft.json
 
 RESIDUAL_SID_NUM_LAYERS=4
@@ -154,8 +154,8 @@ torchrun \
   --monitor_datasource_loss \
   --monitor_datasource_cnt \
   --max_length "${MAX_LENGTH}" \
-  --learning_rate 2e-4 \
-  --min_lr 1e-4 \
+  --learning_rate 1e-4 \
+  --min_lr 1e-5 \
   --weight_decay 0.1 \
   --max_grad_norm 1.0 \
   --lr_scheduler_type cosine \

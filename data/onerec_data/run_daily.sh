@@ -29,12 +29,12 @@ RUN_SFT_ITEM_UNDERSTAND_REV=0
 RUN_SFT_REC_REASON=0
 # ============== Configuration ==============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INPUT_METADATA="/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/output/user_behavior_sequence_daily.parquet"
-CAPTION_INPUT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res/raw_data/onerec_data/adid2caption.parquet"
-PID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res/raw_data/onerec_data/adid2sid.parquet"
-MID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res/raw_data/onerec_data/mid2sid.parquet"
-PRODUCT_PID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res/raw_data/onerec_data/product_pid2sid.parquet"
-OUTPUT_BASE_DIR="/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-res/output/only_seq_add_feature_time"
+INPUT_METADATA="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/raw_data/onerec_data/user_behavior_sequence_daily.parquet"
+CAPTION_INPUT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/raw_data/onerec_data/adid2caption.parquet"
+PID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/raw_data/onerec_data/adid2sid.parquet"
+MID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/raw_data/onerec_data/mid2sid.parquet"
+PRODUCT_PID2SID_MAPPING="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/raw_data/onerec_data/product_pid2sid.parquet"
+OUTPUT_BASE_DIR="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/output/only_seq_add_feature_time"
 
 SEED=42
 # ============== Helper Function ==============

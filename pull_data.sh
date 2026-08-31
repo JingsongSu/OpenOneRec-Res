@@ -13,7 +13,7 @@ readonly DAY="$(TZ=Asia/Shanghai date -d "2 days ago" +%Y%m%d)"
 # 日志文件日期：脚本运行当天 D
 readonly LOG_DAY="$(TZ=Asia/Shanghai date +%Y%m%d)"
 
-readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res"
+readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2"
 readonly LOG_DIR="${OPENONEREC_LOG_DIR:-${REPO_ROOT}/logs}"
 readonly LOG_FILE="${LOG_DIR}/pull_data_${LOG_DAY}.log"
 
@@ -21,7 +21,7 @@ readonly HDFS_BASE="/home/hdp-ads-algo/project/user/zhouyuhang/dsp_recall/rqvae/
 readonly HDFS_DAY_DIR="${HDFS_BASE}/${DAY}"
 
 # Hadoop 机器看到的共享盘路径。
-readonly SHARED_ROOT="/sujingsong/sujingsong"
+readonly SHARED_ROOT="/sujingsong/sujingsong-v2"
 readonly SHARED_DATA_DIR="${SHARED_ROOT}/data"
 
 # GPU 数据转换与 Hadoop 删除/下载共用的跨机器目录锁。
@@ -32,7 +32,7 @@ readonly INPUT_ACCESS_LOCK_DIR="${SHARED_ROOT}/.openonerec_input_access.lock"
 
 # 每 2 分钟检查一次，最多约 20 小时。
 readonly CHECK_INTERVAL_SECONDS=120
-readonly MAX_CHECKS=600
+readonly MAX_CHECKS=720
 
 # cron 环境若找不到 hadoop，请改成 Hadoop 可执行文件的绝对路径。
 readonly HADOOP_BIN="${LOCAL_HADOOP:-hadoop}"

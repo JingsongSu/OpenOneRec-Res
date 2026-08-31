@@ -4,14 +4,14 @@ set -x
 
 # OpenOneRec-Res Stage1 + Branch-Conditioned Interleaved Latent 3:
 # train new itemic embedding rows, residual SID blocks, and three residual-like latent transition blocks for hard-branch thoughts before B/C/D.
-PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-latent/pretrain
+PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain
 
 # IMPORTANT:
 # Branch-conditioned interleaved latent anchors do not need latent vocabulary expansion.
 # Start from the clean itemic + feature base.
-MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic_add_feature
+MODEL_DIR=${PRETRAIN_DIR}/model_output/Qwen3-0.6B_itemic_add_feature_time
 
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature_branch_interleaved_latent3
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature_latent_time
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
 
 ITEMIC_START_ID=151669

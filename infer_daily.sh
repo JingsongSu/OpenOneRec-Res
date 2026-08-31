@@ -17,8 +17,8 @@ readonly DAY="$(TZ=Asia/Shanghai date -d "2 days ago" +%Y%m%d)"
 # 日志文件日期：当天 D
 readonly LOG_DAY="$(TZ=Asia/Shanghai date +%Y%m%d)"
 
-readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res"
-readonly PYTHON_ENV="/home/jovyan/ceph-1/sujinsong/env/onerec"
+readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2"
+readonly PYTHON_ENV="/home/jovyan/ceph-1/sujinsong/env/onerec_latent"
 
 readonly LOG_DIR="${REPO_ROOT}/logs"
 readonly LOG_FILE="${LOG_DIR}/infer_daily_${LOG_DAY}.log"
@@ -27,7 +27,7 @@ readonly CONVERT_SCRIPT="${REPO_ROOT}/convert_all_parts_to_one_parquet_fast.py"
 readonly INFER_SCRIPT="${REPO_ROOT}/online_residual_sid_infer_by_history_ctype_tuned.py"
 
 # GPU 机器看到的同一共享盘。
-readonly SHARED_ROOT="/home/jovyan/zhouyuhang-cloud1/sujingsong"
+readonly SHARED_ROOT="/home/jovyan/zhouyuhang-cloud1/sujingsong-v2"
 readonly SHARED_DATA_DIR="${SHARED_ROOT}/data"
 
 # 必须与 pull_data.sh 在同一共享盘位置对应。
@@ -39,7 +39,7 @@ readonly CONVERT_TEMP_DIR="${ONLINE_INFER_DIR}/.all_parts_infer_tmp"
 readonly INFER_OUTPUT_DIR="${ONLINE_INFER_DIR}/infer_adid_parts"
 
 # 直接读取 run_daily.sh 本轮成功后保留的 SFT 21000 step converted。
-readonly CONVERTED_MODEL_PATH="${REPO_ROOT}/pretrain/model_output/sft_full_residual_add_feature_daily/step15000/global_step15000/converted"
+readonly CONVERTED_MODEL_PATH="${REPO_ROOT}/pretrain/model_output/sft_full_residual_add_feature_latent_time_daily/step15000/global_step15000/converted"
 
 # run_daily.sh 只有在训练和 converted 转换全部成功后才写这个标记。
 readonly SFT_SUCCESS_FILE="${REPO_ROOT}/_SFT_SUCCESS"

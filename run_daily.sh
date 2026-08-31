@@ -12,9 +12,9 @@ set -Eeuo pipefail
 # 建议由 cron 每 2 分钟调用一次。
 # =============================================================================
 
-readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res"
+readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2"
 readonly PRETRAIN_ROOT="${REPO_ROOT}/pretrain"
-readonly PYTHON_ENV="/home/jovyan/ceph-1/sujinsong/env/onerec"
+readonly PYTHON_ENV="/home/jovyan/ceph-1/sujinsong/env/onerec_latent"
 
 readonly LOG_DIR="${REPO_ROOT}/logs"
 readonly STATE_DIR="${REPO_ROOT}/state"
@@ -34,11 +34,11 @@ readonly SFT_SUCCESS_FILE="${REPO_ROOT}/_SFT_SUCCESS"
 readonly SFT_FAILED_FILE="${REPO_ROOT}/_SFT_FAILED"
 
 # 永远不再覆盖或移动这个原始 stg2 模型。
-readonly BASE_STG2_MODEL_DIR="${PRETRAIN_ROOT}/model_output/stg2_residual_add_feature/step21000/global_step21000/converted"
+readonly BASE_STG2_MODEL_DIR="${PRETRAIN_ROOT}/model_output/stg2_residual_add_feature_latent_time/step21000/global_step21000/converted"
 
 # 每一轮 SFT 都写入这个固定输出目录。
 # 新一轮训练开始前删除上一轮目录；本轮成功后完整保留，供 infer_daily.sh 使用。
-readonly SFT_OUTPUT_DIR="${PRETRAIN_ROOT}/model_output/sft_full_residual_add_feature_daily"
+readonly SFT_OUTPUT_DIR="${PRETRAIN_ROOT}/model_output/sft_full_residual_add_feature_latent_time_daily"
 readonly SFT_CONVERTED_MODEL_DIR="${SFT_OUTPUT_DIR}/step15000/global_step15000/converted"
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"

@@ -15,7 +15,7 @@ OpenOneRec-Res residual SID 线上批量推理（safe-fast + time + latent 版�
      KV cache，直接开启 APC 并不是安全的 drop-in 优化。
 3. 对齐 add_feature_time 输入协议：
    - all_parts_infer.parquet 中 messages 必须已经是
-       MID + (ctype + SID + time) x history
+       [optional MID] + (ctype + SID + time) x history
    - 本脚本不重新计算 time，只校验并原样送入 chat template；
    - target/prediction prefix 仍然只追加
        <|ctype_x|><|sid_begin|>
@@ -70,22 +70,22 @@ from transformers import AutoConfig, AutoTokenizer
 # ============================================================================
 
 PRETRAIN_ROOT = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain"
 )
 
 CONVERTED_MODEL_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/"
-    "model_output/sft_full_residual_add_feature_daily/step15000/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
+    "model_output/sft_full_residual_add_feature_latent_time_daily/step15000/"
     "global_step15000/converted"
 )
 
 RESIDUAL_CONFIG_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/"
-    "model_output/sft_full_residual_add_feature_daily/residual_sid_config.json"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
+    "model_output/sft_full_residual_add_feature_latent_time_daily/residual_sid_config.json"
 )
 
 VLLM_MODEL_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/pretrain/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
     "model_output/online_residual_vllm085_b100"
 )
 
@@ -94,21 +94,21 @@ FORCE_REEXPORT = True
 EXPORT_BEAM_SIZE = 50
 
 DATA_PATH = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong/online_infer/"
+    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/online_infer/"
     "all_parts_infer.parquet"
 )
 
 ADID2SID_PARQUET = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/"
     "raw_data/onerec_data/adid2sid.parquet"
 )
 
 CTYPE_IMAGE_SIZE_SEMID_TXT = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong/ctype_image_size_semid.txt"
+    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/ctype_image_size_semid.txt"
 )
 
 OUTPUT_DIR = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong/online_infer/"
+    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/online_infer/"
     "infer_adid_parts"
 )
 
@@ -211,12 +211,50 @@ def convert_messages(messages: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]
 
 
 def extract_mid(metadata_value: Any) -> str:
-    metadata = json.loads(metadata_value) if isinstance(metadata_value, str) else metadata_value
+    """
+    提取输出使用的 mid。
+
+    重要：
+    - MID 是可选特征，缺失 MID 不能阻断模型推理；
+    - metadata 缺失、不是 dict、JSON 解析失败、mid=None/NaN/空字符串时，
+      统一返回空字符串 ""；
+    - producer 不会因为返回空字符串而跳过该用户；
+    - 缺失 MID 时，writer 仍沿用现有输出格式，因此第一列会形如
+      "_<mapped_ctype>"。
+    """
+    if isinstance(metadata_value, str):
+        try:
+            metadata = json.loads(metadata_value)
+        except json.JSONDecodeError:
+            return ""
+    else:
+        metadata = metadata_value
+
     if not isinstance(metadata, dict):
-        raise ValueError(f"Unsupported metadata: {type(metadata)}")
-    mid = str(metadata.get("mid", "")).strip()
-    if not mid:
-        raise ValueError("metadata has empty mid")
+        return ""
+
+    value = metadata.get("mid")
+
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    mid = str(value).strip()
+
+    if mid.lower() in {
+        "",
+        "none",
+        "null",
+        "nan",
+        "<na>",
+    }:
+        return ""
+
     return mid
 
 
@@ -257,7 +295,7 @@ def has_nonzero_history_ctype(messages: Sequence[Dict[str, Any]]) -> bool:
         if times or sid_begin_count or sid_end_count:
             raise ValueError(
                 "Online input contains SID/time tokens but no CType token; "
-                "expected MID + (ctype + SID + time) x history."
+                "expected [optional MID] + (ctype + SID + time) x history."
             )
         return False
 
@@ -1649,7 +1687,7 @@ def prompt_batch_producer(
 
     新结构：
       messages 中 history 已经包含
-      MID + (ctype + SID + time) x history。
+      [optional MID] + (ctype + SID + time) x history。
 
     prediction prefix 仍然只追加：
       <|ctype_target|><|sid_begin|>

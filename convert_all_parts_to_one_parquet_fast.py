@@ -65,17 +65,17 @@ ADIDX2ADID_TXT = Path(
 )
 
 PID2SID_PARQUET = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/"
     "raw_data/onerec_data/adid2sid.parquet"
 )
 
 MID2SID_PARQUET = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/"
     "raw_data/onerec_data/mid2sid.parquet"
 )
 
 OUTPUT_PARQUET = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong/online_infer/"
+    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/online_infer/"
     "all_parts_infer.parquet"
 )
 

@@ -4,16 +4,16 @@ set -x
 
 # OpenOneRec-Res Stage2 + Branch-Conditioned Interleaved Latent 3:
 # full-parameter residual SID + hard-branch thoughts before B/C/D branch-conditioned interleaved latent anchors pretraining.
-PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/sujinsong/OpenOneRec-latent/pretrain
+PRETRAIN_DIR=/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain
 
-STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature_branch_interleaved_latent3
+STG1_OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg1_residual_add_feature_latent_time
 
 # Keep your previous conversion checkpoint convention.
 # Change this only if you choose another real Stage1 checkpoint.
 STG1_STEP=${STG1_STEP:-22000}
 
 MODEL_DIR=${STG1_OUTPUT_DIR}/step${STG1_STEP}/global_step${STG1_STEP}/converted
-OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature_branch_interleaved_latent3
+OUTPUT_DIR=${PRETRAIN_DIR}/model_output/stg2_residual_add_feature_latent_time
 DATASET_CONFIG=${PRETRAIN_DIR}/examples/dataset_config/pretrain_residual_sid.json
 
 RESIDUAL_SID_NUM_LAYERS=4
