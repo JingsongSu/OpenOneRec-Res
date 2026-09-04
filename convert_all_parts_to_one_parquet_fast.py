@@ -54,7 +54,7 @@ import pyarrow.parquet as pq
 # ============================================================================
 
 INPUT_DIR = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong/data"
+    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/data"
 )
 
 PART_GLOB = "part-*"
