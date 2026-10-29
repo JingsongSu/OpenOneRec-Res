@@ -70,22 +70,22 @@ from transformers import AutoConfig, AutoTokenizer
 # ============================================================================
 
 PRETRAIN_ROOT = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v3/pretrain"
 )
 
 CONVERTED_MODEL_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v3/pretrain/"
     "model_output/sft_full_residual_add_feature_latent_time_daily/step15000/"
     "global_step15000/converted"
 )
 
 RESIDUAL_CONFIG_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v3/pretrain/"
     "model_output/sft_full_residual_add_feature_latent_time_daily/residual_sid_config.json"
 )
 
 VLLM_MODEL_PATH = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/pretrain/"
+    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v3/pretrain/"
     "model_output/online_residual_vllm085_b100"
 )
 
@@ -94,21 +94,30 @@ FORCE_REEXPORT = True
 EXPORT_BEAM_SIZE = 50
 
 DATA_PATH = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/online_infer/"
+    "/home/jovyan/zhouyuhang-cloud1/sujinsong/sujingsong-v3/online_infer/"
     "all_parts_infer.parquet"
 )
 
+# Daily published VALID catalog. This replaces the former historical
+# adid2sid.parquet. The snapshot path is injected into spawned writer workers
+# after the parent has built a consistent catalog snapshot/index pair.
+SID_SOURCE_PARQUET = Path(
+    "/home/jovyan/zhouyuhang-cloud1/sujinsong/rq_daily/"
+    "sid_current/ad_sid.parquet"
+)
 ADID2SID_PARQUET = Path(
-    "/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2/"
-    "raw_data/onerec_data/adid2sid.parquet"
+    os.environ.get(
+        "OPENONEREC_SID_SNAPSHOT_PARQUET",
+        str(SID_SOURCE_PARQUET),
+    )
 )
 
 CTYPE_IMAGE_SIZE_SEMID_TXT = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/ctype_image_size_semid.txt"
+    "/home/jovyan/zhouyuhang-cloud1/sujinsong/sujingsong-v3/ctype_image_size_semid.txt"
 )
 
 OUTPUT_DIR = Path(
-    "/home/jovyan/zhouyuhang-cloud1/sujingsong-v2/online_infer/"
+    "/home/jovyan/zhouyuhang-cloud1/sujinsong/sujingsong-v3/online_infer/"
     "infer_adid_parts"
 )
 
@@ -2232,7 +2241,7 @@ def check_paths() -> None:
     for path in [
         PRETRAIN_ROOT,
         DATA_PATH,
-        ADID2SID_PARQUET,
+        SID_SOURCE_PARQUET,
         CTYPE_IMAGE_SIZE_SEMID_TXT,
     ]:
         if not path.exists():
@@ -2277,6 +2286,36 @@ def main() -> None:
         )
 
     model_path = prepare_vllm_model()
+
+    # One immutable catalog snapshot for the ENTIRE run. This happens before
+    # vLLM and writer processes are spawned, and is rebuilt at every run.
+    # Tomorrow's Parquet becomes visible on the NEXT launcher invocation.
+    from daily_valid_sid_catalog import build_daily_sid_catalog
+
+    daily_catalog = build_daily_sid_catalog(
+        source_path=SID_SOURCE_PARQUET,
+        exported_config_path=model_path / "config.json",
+        output_root=OUTPUT_DIR / "_sid_catalog",
+        beam_size=EXPORT_BEAM_SIZE,
+    )
+    os.environ["RESIDUAL_SID_TRIE_PATH"] = daily_catalog["index"]
+    os.environ["OPENONEREC_SID_SNAPSHOT_PARQUET"] = daily_catalog["snapshot"]
+    # The writer process inherits this path through the spawn environment.
+    # Pin the parent as well, so logs and any direct calls use the same snapshot.
+    global ADID2SID_PARQUET
+    ADID2SID_PARQUET = Path(daily_catalog["snapshot"])
+    print(
+        f"[DailySID] source={daily_catalog['source']} "
+        f"mtime_ns={daily_catalog['source_mtime_ns']} "
+        f"valid_unique={daily_catalog['unique_valid_sid']:,} "
+        f"prefix_counts={daily_catalog['prefix_counts']}",
+        flush=True,
+    )
+    print(
+        f"[DailySID] writer_snapshot={daily_catalog['snapshot']} "
+        f"gpu_index={daily_catalog['index']}",
+        flush=True,
+    )
 
     print("")
     print("=" * 80)

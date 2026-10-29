@@ -17,7 +17,7 @@ readonly DAY="$(TZ=Asia/Shanghai date -d "2 days ago" +%Y%m%d)"
 # 日志文件日期：当天 D
 readonly LOG_DAY="$(TZ=Asia/Shanghai date +%Y%m%d)"
 
-readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v2"
+readonly REPO_ROOT="/home/jovyan/ceph-1/sujinsong/online/openonerec-res-v3"
 readonly PYTHON_ENV="/home/jovyan/ceph-1/sujinsong/env/onerec_latent"
 
 readonly LOG_DIR="${REPO_ROOT}/logs"
@@ -27,7 +27,7 @@ readonly CONVERT_SCRIPT="${REPO_ROOT}/convert_all_parts_to_one_parquet_fast.py"
 readonly INFER_SCRIPT="${REPO_ROOT}/online_residual_sid_infer_by_history_ctype_tuned.py"
 
 # GPU 机器看到的同一共享盘。
-readonly SHARED_ROOT="/home/jovyan/zhouyuhang-cloud1/sujingsong-v2"
+readonly SHARED_ROOT="/home/jovyan/zhouyuhang-cloud1/sujinsong/sujingsong-v3"
 readonly SHARED_DATA_DIR="${SHARED_ROOT}/data"
 
 # 必须与 pull_data.sh 在同一共享盘位置对应。
@@ -248,10 +248,10 @@ fi
 # 转换完成后不再读取共享盘原始 part-*，可释放输入锁。
 release_input_lock
 
-# 正式推理前删除过去的全部推理结果。
-echo "[$(date '+%F %T')] 删除过去推理结果：${INFER_OUTPUT_DIR}"
-rm -rf "$INFER_OUTPUT_DIR"
+# 正式推理前仅删除旧的 part-* 结果，保留 _sid_catalog 交给日更索引脚本自动清理。
+echo "[$(date '+%F %T')] 清理过去推理结果：${INFER_OUTPUT_DIR}"
 mkdir -p "$INFER_OUTPUT_DIR"
+find "$INFER_OUTPUT_DIR" -maxdepth 1 -type f -name 'part-*' -delete
 
 echo "============================================================"
 echo "开始 GPU 推理"
@@ -263,7 +263,11 @@ echo "============================================================"
 # 重要：
 # 推理 Python 内部的 CONVERTED_MODEL_PATH 和 RESIDUAL_CONFIG_PATH
 # 必须与上面的 CONVERTED_MODEL_PATH 一致。
-python3 "$INFER_SCRIPT"
+# 仅本次推理使用仓库的受控解码插件，不修改 onerec_latent 环境。
+PYTHONPATH="${REPO_ROOT}/pretrain/vllm085_plugin${PYTHONPATH:+:$PYTHONPATH}" \
+VLLM_USE_V1=0 \
+VLLM_PLUGINS=openonerec_residual_sid_v085 \
+"${PYTHON_ENV}/bin/python" "$INFER_SCRIPT"
 
 output_part_count="$(
     find "$INFER_OUTPUT_DIR" -maxdepth 1 -type f -name 'part-*' | wc -l
